@@ -39,7 +39,11 @@ export class StepEngine {
    * Respects stop signals and propagates errors.
    */
   async run(ctx: Context, bus: EventBus): Promise<void> {
-    for (const step of this.steps) {
+    const stepCount = this.steps.length;
+    for (let stepIndex = 0; stepIndex < stepCount; stepIndex += 1) {
+      const step = this.steps[stepIndex];
+      if (!step) continue;
+
       // Check context stop flag BEFORE running the step
       if (ctx.isStopped()) break;
 

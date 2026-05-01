@@ -21,7 +21,7 @@ interface Route {
 export class Router implements Plugin {
   public readonly name = "sinwan:router";
   private readonly routes: Route[] = [];
-  
+
   // Router-level middleware applied to all routes added AFTER this is called
   private readonly middlewares: RouteHandler[] = [];
 
@@ -35,14 +35,18 @@ export class Router implements Plugin {
   /** Mount a group of routes under a prefix. */
   group(prefix: string, callback: (router: Router) => void) {
     const childRouter = new Router();
-    
+
     // Execute the callback to populate the child router
     callback(childRouter);
 
     // Clean trailing slash from prefix if present
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
+    const childRoutes = childRouter.routes;
+    const childRouteCount = childRoutes.length;
+    for (let routeIndex = 0; routeIndex < childRouteCount; routeIndex += 1) {
+      const route = childRoutes[routeIndex];
+      if (!route) continue;
 
-    for (const route of childRouter.routes) {
       // Merge paths safely
       let mergedPath = cleanPrefix + route.path;
       // Handle the case where prefix was / and child path was /
@@ -60,11 +64,21 @@ export class Router implements Plugin {
 
   // ─── Route Registration ───────────────────────────────────
 
-  get(path: string, ...handlers: RouteHandler[]) { this.add("GET", path, handlers); }
-  post(path: string, ...handlers: RouteHandler[]) { this.add("POST", path, handlers); }
-  put(path: string, ...handlers: RouteHandler[]) { this.add("PUT", path, handlers); }
-  patch(path: string, ...handlers: RouteHandler[]) { this.add("PATCH", path, handlers); }
-  delete(path: string, ...handlers: RouteHandler[]) { this.add("DELETE", path, handlers); }
+  get(path: string, ...handlers: RouteHandler[]) {
+    this.add("GET", path, handlers);
+  }
+  post(path: string, ...handlers: RouteHandler[]) {
+    this.add("POST", path, handlers);
+  }
+  put(path: string, ...handlers: RouteHandler[]) {
+    this.add("PUT", path, handlers);
+  }
+  patch(path: string, ...handlers: RouteHandler[]) {
+    this.add("PATCH", path, handlers);
+  }
+  delete(path: string, ...handlers: RouteHandler[]) {
+    this.add("DELETE", path, handlers);
+  }
 
   private add(method: string, path: string, routeHandlers: RouteHandler[]) {
     this.routes.push({
@@ -77,7 +91,8 @@ export class Router implements Plugin {
   }
 
   private compilePathToRegex(path: string): RegExp {
-    const regexStr = "^" + path.replace(/:([a-zA-Z0-9_]+)/g, "(?<$1>[^/]+)") + "$";
+    const regexStr =
+      "^" + path.replace(/:([a-zA-Z0-9_]+)/g, "(?<$1>[^/]+)") + "$";
     return new RegExp(regexStr);
   }
 
@@ -89,28 +104,42 @@ export class Router implements Plugin {
       run: async (ctx: Context) => {
         const url = new URL(ctx.req.url);
         const method = ctx.req.method;
+        const routes = this.routes;
+        const routeCount = routes.length;
+        for (
+          let routeIndex = 0;
+          routeIndex < routeCount;
+          routeIndex += 1
+        ) {
+          const route = routes[routeIndex];
+          if (!route) continue;
 
-        for (const route of this.routes) {
           if (route.method !== method) continue;
 
           const match = route.regex.exec(url.pathname);
-          if (match) {
-            // Populate context params with regex capture groups
-            ctx.params = match.groups || {};
+          if (!match) continue;
 
-            // Execute all handlers for this route sequentially
-            for (const handler of route.handlers) {
-              await handler(ctx);
-              
-              // If a middleware responded or stopped the flow, halt the chain
-              if (ctx.hasResponded() || ctx.isStopped()) return;
-            }
+          // Populate context params with regex capture groups
+          ctx.params = match.groups || {};
 
-            // Route was fully matched and handled, stop routing
-            return;
+          // Execute all handlers for this route sequentially
+          for (
+            let handlerIndex = 0;
+            handlerIndex < route.handlers.length;
+            handlerIndex += 1
+          ) {
+            const handler = route.handlers[handlerIndex];
+            if (!handler) continue;
+            await handler(ctx);
+
+            // If a middleware responded or stopped the flow, halt the chain
+            if (ctx.hasResponded() || ctx.isStopped()) return;
           }
+
+          // Route was fully matched and handled, stop routing
+          return;
         }
-        
+
         // If no route matched, engine continues natively to next step
       },
     });

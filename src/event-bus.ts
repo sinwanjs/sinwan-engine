@@ -213,7 +213,14 @@ export class EventBus {
   ): Promise<EmitResult> {
     const dispatchEvents = this.getDispatchEvents(event);
 
-    for (const dispatchEvent of dispatchEvents) {
+    for (
+      let dispatchIndex = 0;
+      dispatchIndex < dispatchEvents.length;
+      dispatchIndex += 1
+    ) {
+      const dispatchEvent = dispatchEvents[dispatchIndex];
+      if (!dispatchEvent) continue;
+
       const listeners = this.emitter.rawListeners(dispatchEvent);
       if (listeners.length === 0) continue;
 
@@ -224,7 +231,14 @@ export class EventBus {
         this.emitErrorMonitor(payload, ctx, meta);
       }
 
-      for (const listener of listeners) {
+      for (
+        let listenerIndex = 0;
+        listenerIndex < listeners.length;
+        listenerIndex += 1
+      ) {
+        const listener = listeners[listenerIndex];
+        if (!listener) continue;
+
         if (ctx.isStopped()) return "STOP";
 
         try {
@@ -255,7 +269,14 @@ export class EventBus {
   ): EmitResult {
     const dispatchEvents = this.getDispatchEvents(event);
 
-    for (const dispatchEvent of dispatchEvents) {
+    for (
+      let dispatchIndex = 0;
+      dispatchIndex < dispatchEvents.length;
+      dispatchIndex += 1
+    ) {
+      const dispatchEvent = dispatchEvents[dispatchIndex];
+      if (!dispatchEvent) continue;
+
       const listeners = this.emitter.rawListeners(dispatchEvent);
       if (listeners.length === 0) continue;
 
@@ -266,7 +287,14 @@ export class EventBus {
         this.emitErrorMonitor(payload, ctx, meta);
       }
 
-      for (const listener of listeners) {
+      for (
+        let listenerIndex = 0;
+        listenerIndex < listeners.length;
+        listenerIndex += 1
+      ) {
+        const listener = listeners[listenerIndex];
+        if (!listener) continue;
+
         if (ctx.isStopped()) return "STOP";
 
         try {
@@ -361,7 +389,14 @@ export class EventBus {
     meta: EventMeta,
   ): void {
     const listeners = this.emitter.rawListeners(errorMonitor);
-    for (const listener of listeners) {
+    for (
+      let listenerIndex = 0;
+      listenerIndex < listeners.length;
+      listenerIndex += 1
+    ) {
+      const listener = listeners[listenerIndex];
+      if (!listener) continue;
+
       try {
         listener.call(this.emitter, error, ctx, meta);
       } catch {
