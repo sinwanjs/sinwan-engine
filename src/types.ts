@@ -29,15 +29,103 @@ export type Step = {
 // ─── Event System ───────────────────────────────────────────
 
 /** A single event handler function. */
-export type EventHandler = (
+export type EventSource =
+  | "runtime"
+  | "step-engine"
+  | "context"
+  | "app"
+  | string;
+
+export interface EventMeta {
+  /** The listener channel that is being dispatched (can be a wildcard). */
+  name: string;
+  /** The original emitted event name. */
+  event: string;
+  /** Millisecond timestamp when the event was dispatched. */
+  timestamp: number;
+  /** Monotonic sequence number for this EventBus instance. */
+  sequence: number;
+  /** Request identifier if available on the Context. */
+  requestId?: string;
+  /** Who emitted the event (runtime, step-engine, context, etc.). */
+  source?: EventSource;
+}
+
+export interface EmitOptions {
+  source?: EventSource;
+  requestId?: string;
+  timestamp?: number;
+}
+
+export interface ListenerOptions {
+  signal?: AbortSignal;
+}
+
+export type EventHandler<Payload = unknown> = (
   ctx: Context,
-  payload?: unknown,
+  payload?: Payload,
+  meta?: EventMeta,
 ) => Promise<unknown> | unknown;
 
 /** Map of event names to their handler signatures. */
-export interface EventMap {
-  [eventName: string]: EventHandler;
+export type EventMap = Record<string, EventHandler<unknown>>;
+
+export type EmitResult = "CONTINUE" | "STOP";
+
+export interface EventTraceEntry {
+  name: string;
+  event: string;
+  timestamp: number;
+  sequence: number;
+  requestId?: string;
+  source?: EventSource;
+  payload?: unknown;
 }
+
+export interface EventTraceOptions {
+  enabled?: boolean;
+  maxEntries?: number;
+  includePayload?: boolean;
+}
+
+export interface EventBusOptions {
+  captureRejections?: boolean;
+  maxListeners?: number;
+  enableWildcards?: boolean;
+  wildcardDelimiter?: string;
+}
+
+export interface ContextOptions {
+  requestId?: string;
+  bus?: EventBus;
+  trace?: EventTraceOptions;
+}
+
+export interface InternalEventPayloads {
+  "request:start": { method: string; url: string };
+  "request:end": { durationMs: number };
+  "request:error": { error: unknown };
+  "step:start": { name: string };
+  "step:end": {
+    name: string;
+    outcome: "continue" | "stop" | "responded" | "stopped";
+  };
+  "step:error": { name: string; error: unknown };
+  "response:set": {
+    kind: "json" | "text" | "stream" | "buffer";
+    statusCode: number;
+    contentType: string;
+  };
+  "header:set": { key: string; value: string };
+  "body:parsed": { kind: "json" | "form" | "text" };
+  "body:parse:error": { error: unknown };
+  "context:stop": undefined;
+  "context:dispose": undefined;
+}
+
+export type InternalEventMap = {
+  [K in keyof InternalEventPayloads]: EventHandler<InternalEventPayloads[K]>;
+};
 
 // ─── Error System ───────────────────────────────────────────
 

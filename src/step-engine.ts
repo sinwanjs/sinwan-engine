@@ -43,7 +43,42 @@ export class StepEngine {
       // Check context stop flag BEFORE running the step
       if (ctx.isStopped()) break;
 
-      const result: StepResult | void = await step.run(ctx, bus);
+      const startResult = await bus.emitAsync(
+        "step:start",
+        ctx,
+        { name: step.name },
+        { source: "step-engine" },
+      );
+
+      if (startResult === "STOP" || ctx.isStopped()) return;
+
+      let result: StepResult | void;
+      try {
+        result = await step.run(ctx, bus);
+      } catch (error) {
+        await bus.emitAsync(
+          "step:error",
+          ctx,
+          { name: step.name, error },
+          { source: "step-engine" },
+        );
+        throw error;
+      }
+
+      const outcome = ctx.hasResponded()
+        ? "responded"
+        : ctx.isStopped()
+          ? "stopped"
+          : result?.type === "stop"
+            ? "stop"
+            : "continue";
+
+      await bus.emitAsync(
+        "step:end",
+        ctx,
+        { name: step.name, outcome },
+        { source: "step-engine" },
+      );
 
       // Auto-detect: if a response was sent, halt execution automatically
       if (ctx.hasResponded()) return;

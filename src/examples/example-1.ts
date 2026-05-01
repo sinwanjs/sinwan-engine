@@ -16,7 +16,7 @@ import { EventBus } from "../event-bus";
 import { ErrorHandler } from "../error-handler";
 import { Runtime } from "../runtime";
 import { buildResponse } from "../response";
-import type { Step } from "../types";
+import type { InternalEventPayloads, Step } from "../types";
 
 // ─── Steps ────────────────────────────────────────────────
 
@@ -29,6 +29,13 @@ const preProcessorStep: Step = {
   async run(ctx) {
     // Set some custom data for the router to use
     ctx.set("greeting", "Welcome to SinwanJS with flexible Context!");
+
+    // Context-scoped listener for this request only
+    ctx.on("request:end", (scopedCtx) => {
+      console.log(`[ctx] request finished for ${scopedCtx.requestId}`);
+    });
+
+    await ctx.emitAsync("app:custom", { note: "pre-processor ran" });
     // Auto-continues because no response is set and we return void
   },
 };
@@ -90,18 +97,40 @@ function setupEventListeners(bus: EventBus): void {
     console.log(`→ ${ctx.req.method} ${url.pathname}`);
   });
 
+  // Wildcard listener for all request lifecycle events
+  bus.on("request:*", (_ctx, _payload, meta) => {
+    if (!meta) return;
+    console.log(`[event] ${meta.event} via ${meta.name}`);
+  });
+
   // Log request completion with timing
   bus.on("request:end", (ctx) => {
     const startTime = ctx.get<number>("requestStartTime");
-    const duration = startTime !== undefined
-      ? `${(performance.now() - startTime).toFixed(2)}ms`
-      : "unknown";
+    const duration =
+      startTime !== undefined
+        ? `${(performance.now() - startTime).toFixed(2)}ms`
+        : "unknown";
     console.log(`← ${ctx.statusCode} [${duration}]`);
   });
 
   // Log errors
   bus.on("error", (_ctx, payload) => {
     console.error("✗ Error event:", payload);
+  });
+
+  // Observe when responses are committed
+  bus.on("response:set", (ctx, payload) => {
+    const response = payload as
+      | InternalEventPayloads["response:set"]
+      | undefined;
+    console.log(
+      `[response] ${ctx.statusCode} (${response?.kind ?? "unknown"})`,
+    );
+  });
+
+  // Custom app event emitted from ctx.emit()
+  bus.on("app:custom", (_ctx, payload) => {
+    console.log("[custom]", payload);
   });
 }
 
@@ -140,4 +169,6 @@ const server = Bun.serve({
 });
 
 console.log(`🚀 SinwanJS engine running at http://localhost:${server.port}`);
-console.log("   Try: GET /  |  GET /health  |  GET /error  |  GET /anything-else");
+console.log(
+  "   Try: GET /  |  GET /health  |  GET /error  |  GET /anything-else",
+);

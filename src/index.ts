@@ -19,6 +19,8 @@ export { buildResponse } from "./response";
 
 export { Router } from "./router";
 
+export { captureRejectionSymbol, errorMonitor } from "node:events";
+
 // ─── Types ────────────────────────────────────────────────
 
 export type {
@@ -26,6 +28,17 @@ export type {
   StepResult,
   EventHandler,
   EventMap,
+  EventSource,
+  EventMeta,
+  EmitOptions,
+  EmitResult,
+  ListenerOptions,
+  EventBusOptions,
+  EventTraceEntry,
+  EventTraceOptions,
+  ContextOptions,
+  InternalEventPayloads,
+  InternalEventMap,
   ErrorPayload,
   Plugin,
 } from "./types";

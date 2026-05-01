@@ -60,7 +60,7 @@ export class Runtime {
    * Automatically creates the Context, executes the pipeline, and returns a Response.
    */
   async fetch(req: Request): Promise<Response> {
-    const ctx = new Context(req, this.services);
+    const ctx = new Context(req, this.services, { bus: this.bus });
     await this.execute(ctx);
     return buildResponse(ctx);
   }
@@ -71,9 +71,17 @@ export class Runtime {
    * converted into error responses.
    */
   async execute(ctx: Context): Promise<void> {
+    ctx.attachBus(this.bus);
+    const startTime = Date.now();
+
     try {
       // Phase 1: Notify listeners that a request has started
-      const startResult = await this.bus.emit("request:start", ctx);
+      const startResult = await this.bus.emitAsync(
+        "request:start",
+        ctx,
+        { method: ctx.req.method, url: ctx.req.url },
+        { source: "runtime" },
+      );
       if (startResult === "STOP" || ctx.isStopped()) return;
 
       // Phase 2: Run the deterministic step pipeline
@@ -81,12 +89,29 @@ export class Runtime {
 
       // Phase 3: Notify listeners that request processing is complete
       if (!ctx.isStopped()) {
-        await this.bus.emit("request:end", ctx);
+        const durationMs = Date.now() - startTime;
+        await this.bus.emitAsync(
+          "request:end",
+          ctx,
+          { durationMs },
+          { source: "runtime" },
+        );
       }
     } catch (error: unknown) {
       // Phase 4: Error recovery — notify listeners, then handle
       try {
-        await this.bus.emit("error", ctx, error);
+        await this.bus.emitAsync(
+          "request:error",
+          ctx,
+          { error },
+          { source: "runtime" },
+        );
+      } catch {
+        // Error event handlers failing must not block error handling
+      }
+
+      try {
+        await this.bus.emitAsync("error", ctx, error, { source: "runtime" });
       } catch {
         // Error event handlers failing must not block error handling
       }
@@ -102,6 +127,8 @@ export class Runtime {
           500,
         );
       }
+
+      ctx.dispose();
     }
   }
 }
