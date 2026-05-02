@@ -15,6 +15,7 @@
 import { Sinwan } from "../sinwan";
 import type { Context } from "../context";
 import type { Step } from "../types";
+import path from "node:path";
 
 // ─── 1. Initialize Application ──────────────────────────────
 
@@ -95,12 +96,17 @@ app.post("/echo", async (ctx) => {
 });
 
 app.post("/upload", async (ctx) => {
-  const fileSize = await ctx.saveFile("file", "./uploads/uploaded-file");
+  const fileSize = await ctx.saveFile("file", "./uploads/uploaded-file", {
+    allowedTypes: ["image/jpeg", "image/png"],
+    maxSize: 1024 * 1024 * 0.5,
+  });
   ctx.json({
     message: "File uploaded successfully",
-    size: fileSize,
+    size: (fileSize / 1024 / 1024).toFixed(2) + " MB",
   });
 });
+
+app.static("/static", import.meta.dir);
 
 // ─── 5. Advanced: Route Grouping ───────────────────────────
 

@@ -145,7 +145,7 @@ export interface SaveFileOptions {
   allowedTypes?: string[];
 }
 
-export type ResponseKind = "json" | "text" | "stream" | "sse" | "file" | "buffer" | "unknown";
+export type ResponseKind = "json" | "text" | "stream" | "sse" | "file" | "buffer" | "iterator" | "unknown";
 
 export interface InternalEventPayloads {
   "request:start": { method: string; url: string };
@@ -158,7 +158,7 @@ export interface InternalEventPayloads {
   };
   "step:error": { name: string; error: unknown };
   "response:set": {
-    kind: "json" | "text" | "stream" | "buffer" | "sse";
+    kind: "json" | "text" | "stream" | "buffer" | "sse" | "file" | "iterator";
     statusCode: number;
     contentType: string;
   };

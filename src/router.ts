@@ -62,6 +62,33 @@ export class Router implements Plugin {
     }
   }
 
+  /**
+   * Serve static files from a directory.
+   * Only responds if the file exists on disk, allowing fall-through.
+   *
+   * @param prefix The URL prefix (e.g. "/public")
+   * @param root   The local directory path (e.g. "./public")
+   */
+  static(prefix: string, root: string) {
+    const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
+    const cleanRoot = root.replace(/\/$/, "");
+
+    // Use GET for static file serving
+    this.get(cleanPrefix + "/*", async (ctx) => {
+      const subPath = ctx.params["_wildcard"] || "";
+
+      // Basic security: prevent path traversal
+      if (subPath.includes("..")) return;
+
+      const filePath = cleanRoot + (subPath || "/index.html");
+      const file = Bun.file(filePath);
+
+      if (await file.exists()) {
+        ctx.file(filePath);
+      }
+    });
+  }
+
   // ─── Route Registration ───────────────────────────────────
 
   get(path: string, ...handlers: RouteHandler[]) {
@@ -112,8 +139,18 @@ export class Router implements Plugin {
   }
 
   private compilePathToRegex(path: string): RegExp {
-    const regexStr =
-      "^" + path.replace(/:([a-zA-Z0-9_]+)/g, "(?<$1>[^/]+)") + "$";
+    // Replace :param with a named capture group
+    let regexStr = "^" + path.replace(/:([a-zA-Z0-9_]+)/g, "(?<$1>[^/]+)");
+
+    // Support terminal wildcards: /* (matches /foo/bar) or * (matches everything)
+    if (regexStr.endsWith("/*")) {
+      // Matches /prefix OR /prefix/anything
+      regexStr = regexStr.slice(0, -2) + "(?<_wildcard>/.*)?";
+    } else if (regexStr.endsWith("*")) {
+      regexStr = regexStr.slice(0, -1) + "(?<_wildcard>.*)";
+    }
+
+    regexStr += "$";
     return new RegExp(regexStr);
   }
 
@@ -153,8 +190,9 @@ export class Router implements Plugin {
             if (ctx.hasResponded() || ctx.isStopped()) return;
           }
 
-          // Route was fully matched and handled, stop routing
-          return;
+          // If the route handlers responded or stopped the flow, we are done.
+          // Otherwise, allow fall-through to see if other routes match.
+          if (ctx.hasResponded() || ctx.isStopped()) return;
         }
 
         // If no route matched, engine continues natively to next step

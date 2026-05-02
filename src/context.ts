@@ -183,6 +183,19 @@ export class Context {
     this.commitResponse("stream", passthrough.readable, status, contentType);
   }
 
+  /**
+   * Set a streaming response body using an async iterator or generator function.
+   * Leveraging Bun's native support for streaming async iterables.
+   */
+  iterate(
+    iterator: AsyncIterable<any> | (() => AsyncGenerator<any>),
+    status?: number,
+    contentType: string = "text/plain",
+  ): void {
+    this.guardDoubleResponse();
+    this.commitResponse("iterator", iterator, status, contentType);
+  }
+
   /** Start a Server-Sent Events response and return a controller for sending events. */
   sse(options: SSEOptions = {}): SSEController {
     this.guardDoubleResponse();
@@ -267,10 +280,17 @@ export class Context {
     this.commitResponse("buffer", data, status, contentType);
   }
 
-  /** Set a file response body leveraging Bun.file() for zero-copy streaming. */
-  file(path: string, status?: number): void {
+  /**
+   * Set a file response body leveraging Bun.file() for zero-copy streaming.
+   * Automatically infers Content-Type based on file extension.
+   */
+  file(path: string, status?: number, contentType?: string): void {
     this.guardDoubleResponse();
-    this.commitResponse("file", Bun.file(path), status, "application/octet-stream");
+    const file = Bun.file(path);
+    // Use provided contentType, or file's inferred type (which Bun provides),
+    // or fallback to octet-stream if inference failed.
+    const finalType = contentType ?? (file.type !== "" ? file.type : "application/octet-stream");
+    this.commitResponse("file", file, status, finalType);
   }
 
   /** Append or overwrite a single response header. */

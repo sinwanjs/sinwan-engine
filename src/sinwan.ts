@@ -164,6 +164,15 @@ export class Sinwan {
   group(prefix: string, callback: (router: Router) => void) {
     this.router.group(prefix, callback);
   }
+  
+  /**
+   * Serve static files from a directory.
+   * @param prefix The URL prefix (e.g. "/public")
+   * @param root   The local directory path (e.g. "./public")
+   */
+  static(prefix: string, root: string) {
+    this.router.static(prefix, root);
+  }
 
   /**
    * Start the server and listen for incoming requests.
