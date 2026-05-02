@@ -26,6 +26,8 @@ import type {
   SSEController,
   SSEOptions,
   Request,
+  SaveFileOptions,
+  ResponseKind,
 } from "./types";
 
 // Proper typed HTTP error class
@@ -152,15 +154,7 @@ export class Context {
    */
   json(data: unknown, status?: number): void {
     this.guardDoubleResponse();
-    this.body = data;
-    this.statusCode = status ?? this.statusCode;
-    this.headers.set("Content-Type", "application/json");
-    this._responded = true;
-    this.emitSyncIfAvailable("response:set", {
-      kind: "json",
-      statusCode: this.statusCode,
-      contentType: "application/json",
-    });
+    this.commitResponse("json", data, status, "application/json");
   }
 
   /**
@@ -169,15 +163,7 @@ export class Context {
    */
   text(data: string, status?: number): void {
     this.guardDoubleResponse();
-    this.body = data;
-    this.statusCode = status ?? this.statusCode;
-    this.headers.set("Content-Type", "text/plain");
-    this._responded = true;
-    this.emitSyncIfAvailable("response:set", {
-      kind: "text",
-      statusCode: this.statusCode,
-      contentType: "text/plain",
-    });
+    this.commitResponse("text", data, status, "text/plain");
   }
 
   /**
@@ -191,19 +177,10 @@ export class Context {
     this.guardDoubleResponse();
 
     // Pipe through a passthrough TransformStream.
-    // The finally() fires whether the stream ends normally, errors, or is cancelled.
     const passthrough = new TransformStream();
     readable.pipeTo(passthrough.writable).finally(() => this.dispose());
 
-    this.body = passthrough.readable;
-    this.statusCode = status ?? this.statusCode;
-    this.headers.set("Content-Type", contentType);
-    this._responded = true;
-    this.emitSyncIfAvailable("response:set", {
-      kind: "stream",
-      statusCode: this.statusCode,
-      contentType,
-    });
+    this.commitResponse("stream", passthrough.readable, status, contentType);
   }
 
   /** Start a Server-Sent Events response and return a controller for sending events. */
@@ -264,9 +241,6 @@ export class Context {
       this.dispose();
     };
 
-    this.body = stream;
-    this.statusCode = options.status ?? 200;
-    this.headers.set("Content-Type", "text/event-stream");
     this.headers.set("Cache-Control", "no-cache");
     this.headers.set("Connection", "keep-alive");
 
@@ -274,12 +248,7 @@ export class Context {
       this.setTimeout(options.timeout);
     }
 
-    this._responded = true;
-    this.emitSyncIfAvailable("response:set", {
-      kind: "sse",
-      statusCode: this.statusCode,
-      contentType: "text/event-stream",
-    });
+    this.commitResponse("sse", stream, options.status ?? 200, "text/event-stream");
 
     if (options.retry !== undefined) {
       enqueue(`retry: ${options.retry}\n`);
@@ -289,35 +258,19 @@ export class Context {
     return { send, comment, close };
   }
 
-  /** Set a binary buffer response body. */
   buffer(
     data: Uint8Array | ArrayBuffer,
     status?: number,
     contentType: string = "application/octet-stream",
   ): void {
     this.guardDoubleResponse();
-    this.body = data;
-    this.statusCode = status ?? this.statusCode;
-    this.headers.set("Content-Type", contentType);
-    this._responded = true;
-    this.emitSyncIfAvailable("response:set", {
-      kind: "buffer",
-      statusCode: this.statusCode,
-      contentType,
-    });
+    this.commitResponse("buffer", data, status, contentType);
   }
 
   /** Set a file response body leveraging Bun.file() for zero-copy streaming. */
   file(path: string, status?: number): void {
     this.guardDoubleResponse();
-    this.body = Bun.file(path);
-    this.statusCode = status ?? this.statusCode;
-    this._responded = true;
-    this.emitSyncIfAvailable("response:set", {
-      kind: "file",
-      statusCode: this.statusCode,
-      contentType: "application/octet-stream",
-    });
+    this.commitResponse("file", Bun.file(path), status, "application/octet-stream");
   }
 
   /** Append or overwrite a single response header. */
@@ -349,6 +302,36 @@ export class Context {
     this.server?.timeout(this.req, seconds);
   }
 
+  // ─── Private Internal Methods ───────────────────────────
+
+  /**
+   * Commits the response state. Sets body, status, headers and marks as responded.
+   * Centralized to ensure consistent event emission and state management.
+   */
+  private commitResponse<T = any>(
+    kind: ResponseKind,
+    body: T,
+    status?: number,
+    contentType?: string,
+  ): void {
+    this.body = body;
+    this.statusCode = status ?? this.statusCode;
+
+    if (contentType) {
+      this.headers.set("Content-Type", contentType);
+    }
+
+    const finalContentType = contentType ?? this.headers.get("Content-Type") ?? "unknown";
+
+    this._responded = true;
+
+    this.emitSyncIfAvailable("response:set", {
+      kind,
+      statusCode: this.statusCode,
+      contentType: finalContentType,
+    });
+  }
+
   // ─── Utilities ──────────────────────────────────────────
 
   /**
@@ -368,7 +351,7 @@ export class Context {
     try {
       if (contentType.includes("application/json")) {
         kind = "json";
-        this._parsedBody = await this.req.clone().json();
+        this._parsedBody = await this.req.json();
       } else if (
         contentType.includes("application/x-www-form-urlencoded") ||
         contentType.includes("multipart/form-data")
@@ -385,7 +368,7 @@ export class Context {
         this._parsedBody = obj;
       } else {
         kind = "text";
-        this._parsedBody = await this.req.clone().text();
+        this._parsedBody = await this.req.text();
       }
     } catch (err) {
       if (err instanceof HttpError) throw err;
@@ -416,6 +399,12 @@ export class Context {
     if (this._formData) return this._formData;
 
     const contentType = this.req.headers.get("content-type") || "";
+    const contentLength = this.req.headers.get("content-length") || "unknown";
+
+    if (contentLength === "0") {
+      throw new HttpError("Request body is empty", 400);
+    }
+
     const isForm =
       contentType.includes("multipart/form-data") ||
       contentType.includes("application/x-www-form-urlencoded");
@@ -428,12 +417,19 @@ export class Context {
     }
 
     try {
-      // Clone so the original body stream remains untouched for other readers.
-      this._formData = (await this.req.clone().formData()) as any;
-    } catch {
-      const error = new HttpError("Failed to parse multipart/form-data body", 400);
-      this.emitSyncIfAvailable("body:parse:error", { error });
-      throw error;
+      // If native formData fails, it might be due to streaming issues.
+      this._formData = (await this.req.formData()) as any;
+    } catch (err) {
+      // Fallback: Read as blob and then parse (more memory but more stable for some Bun versions)
+      try {
+        const blob = await this.req.blob();
+        const response = new Response(blob, { headers: { "Content-Type": contentType } });
+        this._formData = (await response.formData()) as any;
+      } catch (fallbackErr) {
+        const error = new HttpError("Failed to parse multipart/form-data body", 400);
+        this.emitSyncIfAvailable("body:parse:error", { error });
+        throw error;
+      }
     }
 
     this.emitSyncIfAvailable("body:parsed", { kind: "form" });
@@ -446,20 +442,28 @@ export class Context {
    *
    * @param field   The FormData field name that contains the uploaded file.
    * @param dest    Destination path on disk.
+   * @param options Validation options (size, type).
    * @returns       The number of bytes written.
    *
    * Throws:
    *   - HttpError(400) if the field is missing or is not a File.
-   *   - HttpError(415) if the request is not a multipart form (propagated from formData()).
+   *   - HttpError(413) if the file exceeds maxSize.
+   *   - HttpError(415) if the file type is not allowed.
    *
    * Usage:
    * ```ts
    * // In a route handler:
-   * const bytes = await ctx.saveFile("profilePicture", "./uploads/avatar.png");
-   * ctx.json({ saved: bytes });
+   * const bytes = await ctx.saveFile("avatar", "./uploads/me.png", {
+   *   maxSize: 5 * 1024 * 1024, // 5MB
+   *   allowedTypes: ['image/png', 'image/jpeg']
+   * });
    * ```
    */
-  async saveFile(field: string, dest: string): Promise<number> {
+  async saveFile(
+    field: string,
+    dest: string,
+    options: SaveFileOptions = {},
+  ): Promise<number> {
     const fd = await this.formData();
     const entry = fd.get(field);
 
@@ -474,6 +478,22 @@ export class Context {
       throw new HttpError(
         `Form field "${field}" is a plain string, expected a file upload.`,
         400,
+      );
+    }
+
+    // Validation: File Size
+    if (options.maxSize && entry.size > options.maxSize) {
+      throw new HttpError(
+        `File too large: ${entry.size} bytes (max: ${options.maxSize})`,
+        413,
+      );
+    }
+
+    // Validation: File Type (MIME)
+    if (options.allowedTypes && !options.allowedTypes.includes(entry.type)) {
+      throw new HttpError(
+        `Invalid file type: ${entry.type}. Allowed: ${options.allowedTypes.join(", ")}`,
+        415,
       );
     }
 

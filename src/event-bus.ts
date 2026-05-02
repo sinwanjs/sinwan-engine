@@ -61,8 +61,10 @@ export class EventBus {
     handler: (...args: any[]) => void,
     options?: ListenerOptions,
   ): this {
+    if (options?.signal?.aborted) return this;
+
     this.emitter.on(event, handler);
-    this.attachAbort(event, handler, options);
+    this.attachAbort(event, handler, options, false);
     return this;
   }
 
@@ -81,8 +83,10 @@ export class EventBus {
     handler: (...args: any[]) => void,
     options?: ListenerOptions,
   ): this {
+    if (options?.signal?.aborted) return this;
+
     this.emitter.on(event, handler);
-    this.attachAbort(event, handler, options);
+    this.attachAbort(event, handler, options, false);
     return this;
   }
 
@@ -119,8 +123,10 @@ export class EventBus {
     handler: (...args: any[]) => void,
     options?: ListenerOptions,
   ): this {
+    if (options?.signal?.aborted) return this;
+
     this.emitter.prependListener(event, handler);
-    this.attachAbort(event, handler, options);
+    this.attachAbort(event, handler, options, false);
     return this;
   }
 
@@ -304,10 +310,27 @@ export class EventBus {
             payload,
             meta,
           ) as unknown;
+
+          // Detect async handlers registered on the sync path.
+          // A returned Promise means the handler is async — its STOP signal
+          // will never be seen here. Warn loudly in development so the caller
+          // knows to use emitAsync() instead.
+          if (
+            typeof result === "object" &&
+            result !== null &&
+            typeof (result as Promise<unknown>).then === "function"
+          ) {
+            console.warn(
+              `[EventBus] emitSync: handler for "${dispatchEvent}" returned a Promise. ` +
+              `Async handlers must be registered with emitAsync(). ` +
+              `STOP signals from this handler will be ignored.`,
+            );
+          }
+
           if (result === "STOP") return "STOP";
           if (ctx.isStopped()) return "STOP";
         } catch (error) {
-          this.handleRejection(error, dispatchEvent, ctx, payload, meta);
+          this.emitErrorMonitor(error, ctx, meta);
           throw error;
         }
       }
@@ -354,27 +377,55 @@ export class EventBus {
     return events;
   }
 
+  /**
+   * Wire up AbortSignal-based cleanup for a registered handler.
+   * We wrap the handler in a thin shim that removes the abort listener when
+   * the event fires. This keeps the emitter's listener list clean — only the
+   * real handler (or its shim) is ever registered.
+   */
   private attachAbort(
     event: string | symbol,
     handler: (...args: any[]) => void,
-    options?: ListenerOptions,
-    isOnce: boolean = false,
+    options: ListenerOptions | undefined,
+    isOnce: boolean,
   ): void {
     const signal = options?.signal;
     if (!signal) return;
 
+    // Already-aborted case: guard already handled by callers, but be defensive.
     if (signal.aborted) {
       this.emitter.off(event, handler);
       return;
     }
 
+    // abortHandler removes the real handler when the signal fires.
     const abortHandler = () => this.emitter.off(event, handler);
     signal.addEventListener("abort", abortHandler, { once: true });
 
     if (isOnce) {
-      const cleanup = () => signal.removeEventListener("abort", abortHandler);
-      this.emitter.once(event, cleanup);
+      // When the event fires and the once-handler runs, we no longer need the
+      // abort listener on the signal. Instead of registering a second emitter
+      // listener (the old approach), we replace the handler on the emitter with
+      // a shim that self-cleans the signal listener and then delegates.
+      //
+      // Step 1: remove the plain once-registration we just made in the caller.
+      this.emitter.off(event, handler);
+
+      // Step 2: register a shim that cleans up the abort listener, then calls
+      // the original handler with all its arguments.
+      const shim = (...args: any[]) => {
+        signal.removeEventListener("abort", abortHandler);
+        return handler(...args);
+      };
+
+      // Preserve the original handler reference on the shim so that external
+      // callers using `emitter.rawListeners()` can still identify it.
+      Object.defineProperty(shim, "name", { value: handler.name });
+
+      this.emitter.once(event, shim);
     }
+    // For persistent (non-once) listeners, abortHandler is all we need.
+    // When the signal fires it removes the handler; no cleanup shim required.
   }
 
   private trace(ctx: Context, meta: EventMeta, payload: unknown): void {

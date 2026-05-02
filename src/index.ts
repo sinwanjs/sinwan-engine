@@ -12,7 +12,7 @@ export { EventBus } from "./event-bus";
 export { ErrorHandler } from "./error-handler";
 export type { ErrorHook } from "./error-handler";
 export { Runtime } from "./runtime";
-export { SinwanApp, type AppOptions } from "./sinwan";
+export { Sinwan, type AppOptions } from "./sinwan";
 // ─── Functions ────────────────────────────────────────────
 
 export { buildResponse } from "./response";

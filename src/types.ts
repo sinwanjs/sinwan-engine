@@ -138,6 +138,15 @@ export interface ContextOptions {
   global?: Map<string, any>;
 }
 
+export interface SaveFileOptions {
+  /** Maximum file size in bytes. */
+  maxSize?: number;
+  /** List of allowed MIME types (e.g. ['image/png', 'application/pdf']). */
+  allowedTypes?: string[];
+}
+
+export type ResponseKind = "json" | "text" | "stream" | "sse" | "file" | "buffer" | "unknown";
+
 export interface InternalEventPayloads {
   "request:start": { method: string; url: string };
   "request:end": { durationMs: number };
