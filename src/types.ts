@@ -6,8 +6,25 @@
  * directly since they are always co-present at runtime.
  */
 
+import type { BunRequest } from "bun";
 import type { Context } from "./context";
 import type { EventBus } from "./event-bus";
+
+// ─── Lifecycle System ─────────────────────────────────────────
+
+export enum LifecycleState {
+  IDLE = "idle",
+  INIT = "init",
+  READY = "ready",
+  SHUTDOWN = "shutdown",
+  DESTROYED = "destroyed",
+}
+
+export type LifecycleEvent =
+  | "app:init"
+  | "app:ready"
+  | "app:shutdown"
+  | "app:destroy";
 
 // ─── Step System ────────────────────────────────────────────
 
@@ -61,14 +78,15 @@ export interface ListenerOptions {
   signal?: AbortSignal;
 }
 
-export type EventHandler<Payload = unknown> = (
+export type EventHandler<E extends string = string, P = any> = (
   ctx: Context,
-  payload?: Payload,
+  payload?: P,
   meta?: EventMeta,
 ) => Promise<unknown> | unknown;
 
 /** Map of event names to their handler signatures. */
-export type EventMap = Record<string, EventHandler<unknown>>;
+export type EventMap = Record<string,
+  EventHandler<string>>;
 
 export type EmitResult = "CONTINUE" | "STOP";
 
@@ -88,6 +106,23 @@ export interface EventTraceOptions {
   includePayload?: boolean;
 }
 
+export interface SSEOptions {
+  status?: number;
+  retry?: number;
+  timeout?: number;
+}
+
+export interface SSEController {
+  send(
+    data: string | object,
+    event?: string,
+    id?: string,
+    retry?: number,
+  ): void;
+  comment(text: string): void;
+  close(): void;
+}
+
 export interface EventBusOptions {
   captureRejections?: boolean;
   maxListeners?: number;
@@ -99,6 +134,8 @@ export interface ContextOptions {
   requestId?: string;
   bus?: EventBus;
   trace?: EventTraceOptions;
+  server?: any;
+  global?: Map<string, any>;
 }
 
 export interface InternalEventPayloads {
@@ -112,7 +149,7 @@ export interface InternalEventPayloads {
   };
   "step:error": { name: string; error: unknown };
   "response:set": {
-    kind: "json" | "text" | "stream" | "buffer";
+    kind: "json" | "text" | "stream" | "buffer" | "sse";
     statusCode: number;
     contentType: string;
   };
@@ -121,10 +158,14 @@ export interface InternalEventPayloads {
   "body:parse:error": { error: unknown };
   "context:stop": undefined;
   "context:dispose": undefined;
+  "app:init": { options: any };
+  "app:ready": { port: number | string; server: any };
+  "app:shutdown": undefined;
+  "app:destroy": undefined;
 }
 
 export type InternalEventMap = {
-  [K in keyof InternalEventPayloads]: EventHandler<InternalEventPayloads[K]>;
+  [K in keyof InternalEventPayloads]: EventHandler<K & string, InternalEventPayloads[K]>;
 };
 
 // ─── Error System ───────────────────────────────────────────
@@ -146,3 +187,5 @@ export interface Plugin {
   readonly name: string;
   install(app: Runtime): void;
 }
+
+export interface Request<T extends string = string> extends BunRequest<T> { }

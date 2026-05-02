@@ -12,6 +12,7 @@
  *  - Context can interact with the EventBus when attached.
  */
 
+import type { CookieMap, Server } from "bun";
 import type { EventBus } from "./event-bus";
 import type {
   ContextOptions,
@@ -22,11 +23,30 @@ import type {
   EventTraceEntry,
   EventTraceOptions,
   ListenerOptions,
+  SSEController,
+  SSEOptions,
+  Request,
 } from "./types";
+
+// Proper typed HTTP error class
+class HttpError extends Error {
+  public readonly statusCode: number;
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = "HttpError";
+    this.statusCode = statusCode;
+  }
+}
 
 export class Context {
   /** The incoming Bun/Web API Request. */
-  public readonly req: Request;
+  public req: Request;
+
+  /**
+   * The Bun Server instance (if provided).
+   * Guards added in clientIP / setTimeout before access.
+   */
+  public readonly server: Server<any> | undefined;
 
   /** HTTP status code for the response. */
   public statusCode: number = 200;
@@ -38,7 +58,10 @@ export class Context {
   public readonly headers: Headers = new Headers();
 
   /** Arbitrary per-request state for steps/plugins. */
-  public readonly state: Map<string, unknown> = new Map();
+  public readonly state: Map<string, any> = new Map();
+
+  /** Shared application-level state. */
+  public readonly global: Map<string, any>;
 
   /** URL parameters populated by the router (e.g. /users/:id -> params.id) */
   public params: Record<string, string> = {};
@@ -51,25 +74,24 @@ export class Context {
   private _stopped: boolean = false;
   private _responded: boolean = false;
   private _parsedBody: unknown = undefined;
+  private _formData?: FormData;
   private _bus?: EventBus;
   private _disposed: boolean = false;
 
-  private readonly services: Map<string, unknown>;
   private readonly traceOptions: Required<EventTraceOptions>;
   private readonly eventTrace: EventTraceEntry[] = [];
+
+  // Map stores Set<EventHandler> so multiple registrations of the
+  // same original handler each get their own tracked wrapped handler entry.
   private readonly scopedHandlers: Map<
     string,
-    Map<EventHandler, EventHandler>
+    Map<EventHandler, Set<EventHandler>>
   > = new Map();
 
-  constructor(
-    req: Request,
-    services: Map<string, unknown> = new Map(),
-    options: ContextOptions = {},
-  ) {
-    this.req = req;
-    this.services = services;
-    this.requestId = options.requestId ?? createRequestId();
+  constructor(options: ContextOptions = {}) {
+    this.req = undefined as unknown as Request;
+    this.server = options.server;
+    this.requestId = options.requestId ?? this.createRequestId();
     this._bus = options.bus;
 
     this.traceOptions = {
@@ -77,6 +99,49 @@ export class Context {
       maxEntries: options.trace?.maxEntries ?? 100,
       includePayload: options.trace?.includePayload ?? false,
     };
+
+    this.global = options.global ?? new Map();
+  }
+
+  /**
+   * Set the request (must be called before execute)
+   */
+  setReq(req: Request): void {
+    this.req = req;
+  }
+
+  // ─── State Management ───────────────────────────────────
+
+  /** Set a value in the request state. */
+  set(key: string, value: any): void {
+    this.state.set(key, value);
+  }
+
+  /** Get a value from the request state. */
+  get<T = any>(key: string): T | undefined {
+    return this.state.get(key) as T;
+  }
+
+  /** Check if a value exists in the request state. */
+  has(key: string): boolean {
+    return this.state.has(key);
+  }
+
+  // ─── Global State Management ──────────────────────────────
+
+  /** Set a value in the global application state. */
+  setGlobal(key: string, value: any): void {
+    this.global.set(key, value);
+  }
+
+  /** Get a value from the global application state. */
+  getGlobal<T = any>(key: string): T | undefined {
+    return this.global.get(key) as T;
+  }
+
+  /** Check if a value exists in the global state. */
+  hasGlobal(key: string): boolean {
+    return this.global.has(key);
   }
 
   // ─── Response Methods ───────────────────────────────────
@@ -115,14 +180,22 @@ export class Context {
     });
   }
 
-  /** Set a streaming response body. */
+  /**
+   * Set a streaming response body.
+   */
   stream(
     readable: ReadableStream,
     status?: number,
     contentType: string = "application/octet-stream",
   ): void {
     this.guardDoubleResponse();
-    this.body = readable;
+
+    // Pipe through a passthrough TransformStream.
+    // The finally() fires whether the stream ends normally, errors, or is cancelled.
+    const passthrough = new TransformStream();
+    readable.pipeTo(passthrough.writable).finally(() => this.dispose());
+
+    this.body = passthrough.readable;
     this.statusCode = status ?? this.statusCode;
     this.headers.set("Content-Type", contentType);
     this._responded = true;
@@ -131,6 +204,89 @@ export class Context {
       statusCode: this.statusCode,
       contentType,
     });
+  }
+
+  /** Start a Server-Sent Events response and return a controller for sending events. */
+  sse(options: SSEOptions = {}): SSEController {
+    this.guardDoubleResponse();
+
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    let closed = false;
+
+    // The cancel arrow function correctly captures `this` (Context instance)
+    // from the enclosing scope — no change needed here.
+    const stream = new ReadableStream<Uint8Array>({
+      start(ctrl) {
+        controller = ctrl;
+      },
+      cancel: (_reason) => {
+        closed = true;
+        this.dispose();
+      },
+    });
+
+    const enqueue = (value: string) => {
+      if (closed) return;
+      controller.enqueue(encoder.encode(value));
+    };
+
+    const send = (
+      data: string | object,
+      event?: string,
+      id?: string,
+      retry?: number,
+    ) => {
+      if (closed) return;
+
+      if (retry !== undefined) enqueue(`retry: ${retry}\n`);
+      if (id !== undefined) enqueue(`id: ${id}\n`);
+      if (event !== undefined) enqueue(`event: ${event}\n`);
+
+      const payload = typeof data === "string" ? data : JSON.stringify(data);
+      payload.split("\n").forEach((line) => enqueue(`data: ${line}\n`));
+      enqueue("\n");
+    };
+
+    const comment = (text: string) => {
+      if (closed) return;
+      enqueue(`: ${text}\n\n`);
+    };
+
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      try {
+        controller.close();
+      } catch {
+        // Ignore errors if already closed
+      }
+      this.dispose();
+    };
+
+    this.body = stream;
+    this.statusCode = options.status ?? 200;
+    this.headers.set("Content-Type", "text/event-stream");
+    this.headers.set("Cache-Control", "no-cache");
+    this.headers.set("Connection", "keep-alive");
+
+    if (options.timeout !== undefined) {
+      this.setTimeout(options.timeout);
+    }
+
+    this._responded = true;
+    this.emitSyncIfAvailable("response:set", {
+      kind: "sse",
+      statusCode: this.statusCode,
+      contentType: "text/event-stream",
+    });
+
+    if (options.retry !== undefined) {
+      enqueue(`retry: ${options.retry}\n`);
+    }
+    comment("ok");
+
+    return { send, comment, close };
   }
 
   /** Set a binary buffer response body. */
@@ -151,29 +307,46 @@ export class Context {
     });
   }
 
+  /** Set a file response body leveraging Bun.file() for zero-copy streaming. */
+  file(path: string, status?: number): void {
+    this.guardDoubleResponse();
+    this.body = Bun.file(path);
+    this.statusCode = status ?? this.statusCode;
+    this._responded = true;
+    this.emitSyncIfAvailable("response:set", {
+      kind: "file",
+      statusCode: this.statusCode,
+      contentType: "application/octet-stream",
+    });
+  }
+
   /** Append or overwrite a single response header. */
   setHeader(key: string, value: string): void {
     this.headers.set(key, value);
     this.emitSyncIfAvailable("header:set", { key, value });
   }
 
-  // ─── State Helpers ──────────────────────────────────────
+  // ─── Bun Native Integrations ────────────────────────────
 
-  /** Get a value from the request state. */
-  get<T>(key: string): T | undefined {
-    return this.state.get(key) as T | undefined;
+  /** Access the CookieMap from the incoming Bun request. */
+  get cookies(): CookieMap {
+    return this.req.cookies;
   }
 
-  /** Set a value in the request state. */
-  set(key: string, value: unknown): void {
-    this.state.set(key, value);
+  /**
+   * Get the client IP and port from the Bun server.
+   */
+  get clientIP(): ReturnType<Server<any>["requestIP"]> | undefined {
+    return this.server?.requestIP(this.req);
   }
 
-  /** Get an app-wide service injected by DI. */
-  service<T>(name: string): T {
-    const s = this.services.get(name);
-    if (!s) throw new Error(`Service "${name}" not found in DI container.`);
-    return s as T;
+  /**
+   * Override the global idle timeout for this specific request.
+   * Useful for long-lived streams like Server-Sent Events.
+   * @param seconds Timeout in seconds, 0 to disable.
+   */
+  setTimeout(seconds: number): void {
+    this.server?.timeout(this.req, seconds);
   }
 
   // ─── Utilities ──────────────────────────────────────────
@@ -181,6 +354,10 @@ export class Context {
   /**
    * Safely read and parse the request body based on Content-Type.
    * Caches the result so it can be called multiple times.
+   *
+   * For multipart/form-data and application/x-www-form-urlencoded the result
+   * is a `Record<string, string | File>` — File entries are preserved as-is
+   * so callers can inspect them or pass them to saveFile().
    */
   async parseBody<T = unknown>(): Promise<T> {
     if (this._parsedBody !== undefined) return this._parsedBody as T;
@@ -197,11 +374,13 @@ export class Context {
         contentType.includes("multipart/form-data")
       ) {
         kind = "form";
-        // We clone to allow multiple readers
-        const fd = await this.req.clone().formData();
-        const obj: Record<string, unknown> = {};
+        // Delegate to formData() so the cache is shared between both methods.
+        const fd = await this.formData();
+        const obj: Record<string, string | File> = {};
         for (const [k, v] of fd.entries()) {
-          obj[k] = v;
+          // FormData entries are either string or File (a subtype of Blob).
+          // Preserve File objects instead of coercing — callers can use saveFile().
+          obj[k] = v as string | File;
         }
         this._parsedBody = obj;
       } else {
@@ -209,15 +388,136 @@ export class Context {
         this._parsedBody = await this.req.clone().text();
       }
     } catch (err) {
-      const error = Object.assign(new Error("Failed to parse request body"), {
-        statusCode: 400,
-      });
+      if (err instanceof HttpError) throw err;
+      const error = new HttpError("Failed to parse request body", 400);
       this.emitSyncIfAvailable("body:parse:error", { error });
       throw error;
     }
 
     this.emitSyncIfAvailable("body:parsed", { kind });
     return this._parsedBody as T;
+  }
+
+  /**
+   * Return the raw `FormData` from the request body, caching it so the
+   * underlying stream is consumed only once.
+   *
+   * Throws an HttpError(415) if the Content-Type is not a form type, and
+   * an HttpError(400) if the body cannot be parsed.
+   *
+   * Usage:
+   * ```ts
+   * const fd = await ctx.formData();
+   * const name = fd.get("name") as string;
+   * const avatar = fd.get("avatar") as File;
+   * ```
+   */
+  async formData(): Promise<FormData> {
+    if (this._formData) return this._formData;
+
+    const contentType = this.req.headers.get("content-type") || "";
+    const isForm =
+      contentType.includes("multipart/form-data") ||
+      contentType.includes("application/x-www-form-urlencoded");
+
+    if (!isForm) {
+      throw new HttpError(
+        `Expected a form Content-Type, got: ${contentType || "(none)"}`,
+        415,
+      );
+    }
+
+    try {
+      // Clone so the original body stream remains untouched for other readers.
+      this._formData = (await this.req.clone().formData()) as any;
+    } catch {
+      const error = new HttpError("Failed to parse multipart/form-data body", 400);
+      this.emitSyncIfAvailable("body:parse:error", { error });
+      throw error;
+    }
+
+    this.emitSyncIfAvailable("body:parsed", { kind: "form" });
+    return this._formData!;
+  }
+
+  /**
+   * Extract a file field from the multipart form and write it to disk using
+   * Bun.write() (zero-copy where possible).
+   *
+   * @param field   The FormData field name that contains the uploaded file.
+   * @param dest    Destination path on disk.
+   * @returns       The number of bytes written.
+   *
+   * Throws:
+   *   - HttpError(400) if the field is missing or is not a File.
+   *   - HttpError(415) if the request is not a multipart form (propagated from formData()).
+   *
+   * Usage:
+   * ```ts
+   * // In a route handler:
+   * const bytes = await ctx.saveFile("profilePicture", "./uploads/avatar.png");
+   * ctx.json({ saved: bytes });
+   * ```
+   */
+  async saveFile(field: string, dest: string): Promise<number> {
+    const fd = await this.formData();
+    const entry = fd.get(field);
+
+    if (!entry) {
+      throw new HttpError(
+        `Form field "${field}" is missing from the request.`,
+        400,
+      );
+    }
+
+    if (typeof entry === "string") {
+      throw new HttpError(
+        `Form field "${field}" is a plain string, expected a file upload.`,
+        400,
+      );
+    }
+
+    // entry is a File (subtype of Blob). Bun.write() accepts Blob natively.
+    const bytesWritten = await Bun.write(dest, entry);
+
+    this.emitSyncIfAvailable("file:saved", {
+      field,
+      dest,
+      size: bytesWritten,
+      name: (entry as File).name,
+      type: entry.type,
+    });
+
+    return bytesWritten;
+  }
+
+  /**
+   * Save multiple file fields from the multipart form in one call.
+   *
+   * @param uploads  Array of `{ field, dest }` pairs.
+   * @returns        A map of field name → bytes written.
+   *
+   * Usage:
+   * ```ts
+   * const results = await ctx.saveFiles([
+   *   { field: "avatar",  dest: "./uploads/avatar.png"  },
+   *   { field: "resume",  dest: "./uploads/resume.pdf"  },
+   * ]);
+   * ctx.json(Object.fromEntries(results));
+   * ```
+   */
+  async saveFiles(
+    uploads: Array<{ field: string; dest: string }>,
+  ): Promise<Map<string, number>> {
+    const results = new Map<string, number>();
+    // Run all writes concurrently — each saveFile() call reuses the cached FormData.
+    await Promise.all(
+      uploads.map(async ({ field, dest }) => {
+        const bytes = await this.saveFile(field, dest);
+        results.set(field, bytes);
+      }),
+    );
+    return results;
   }
 
   // ─── Flow Control ───────────────────────────────────────
@@ -276,7 +576,9 @@ export class Context {
     );
   }
 
-  /** Register a listener scoped to this context. */
+  /**
+   * Register a listener scoped to this context.
+   */
   on(event: string, handler: EventHandler, options?: ListenerOptions): this {
     const bus = this.getBus();
     const wrapped = this.wrapScopedHandler(event, handler, false);
@@ -294,13 +596,16 @@ export class Context {
     return this;
   }
 
-  /** Remove a scoped listener. */
+  /**
+   * Remove a scoped listener.
+   * Removes the most-recently-added wrapped handler for this original handler.
+   */
   off(event: string, handler: EventHandler): this {
     const bus = this.getBus();
     const wrapped = this.getTrackedHandler(event, handler);
     if (wrapped) {
       bus.off(event, wrapped);
-      this.untrackHandler(event, handler);
+      this.untrackHandler(event, handler, wrapped);
     }
     return this;
   }
@@ -314,8 +619,10 @@ export class Context {
 
     if (!this._bus) return;
     for (const [event, handlerMap] of this.scopedHandlers.entries()) {
-      for (const wrapped of handlerMap.values()) {
-        this._bus.off(event, wrapped);
+      for (const wrappedSet of handlerMap.values()) {
+        for (const wrapped of wrappedSet) {
+          this._bus.off(event, wrapped);
+        }
       }
     }
     this.scopedHandlers.clear();
@@ -385,15 +692,21 @@ export class Context {
     handler: EventHandler,
     isOnce: boolean,
   ): EventHandler {
-    return (ctx, payload, meta) => {
+    // Capture `wrapped` via a closure reference so the once-cleanup can
+    // untrack this specific wrapped instance (not just any wrapped for handler).
+    let wrapped: EventHandler;
+    wrapped = (ctx, payload, meta) => {
       if (ctx !== this) return;
       if (isOnce) {
-        this.untrackHandler(event, handler);
+        this.untrackHandler(event, handler, wrapped);
       }
       return handler(ctx, payload, meta);
     };
+    return wrapped;
   }
 
+  // Map stores Set<EventHandler> so multiple registrations of the
+  // same original handler each get their own tracked wrapped handler entry.
   private trackHandler(
     event: string,
     handler: EventHandler,
@@ -404,35 +717,65 @@ export class Context {
       handlerMap = new Map();
       this.scopedHandlers.set(event, handlerMap);
     }
-    handlerMap.set(handler, wrapped);
+    let wrappedSet = handlerMap.get(handler);
+    if (!wrappedSet) {
+      wrappedSet = new Set();
+      handlerMap.set(handler, wrappedSet);
+    }
+    wrappedSet.add(wrapped);
   }
 
+  /**
+   * Returns the most recently tracked wrapped handler for the given original,
+   * or undefined if none exists.
+   */
   private getTrackedHandler(
     event: string,
     handler: EventHandler,
   ): EventHandler | undefined {
     const handlerMap = this.scopedHandlers.get(event);
-    return handlerMap?.get(handler);
+    const wrappedSet = handlerMap?.get(handler);
+    if (!wrappedSet || wrappedSet.size === 0) return undefined;
+    // Return the last item in the Set (insertion order).
+    let last: EventHandler | undefined;
+    for (const w of wrappedSet) last = w;
+    return last;
   }
 
-  private untrackHandler(event: string, handler: EventHandler): void {
+  /**
+   * Remove a specific wrapped handler from tracking.
+   * Cleans up empty Sets and Maps to avoid memory leaks.
+   */
+  private untrackHandler(
+    event: string,
+    handler: EventHandler,
+    wrapped: EventHandler,
+  ): void {
     const handlerMap = this.scopedHandlers.get(event);
     if (!handlerMap) return;
-    handlerMap.delete(handler);
+    const wrappedSet = handlerMap.get(handler);
+    if (!wrappedSet) return;
+    wrappedSet.delete(wrapped);
+    if (wrappedSet.size === 0) {
+      handlerMap.delete(handler);
+    }
     if (handlerMap.size === 0) {
       this.scopedHandlers.delete(event);
     }
   }
-}
 
-function createRequestId(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
+  /**
+   * Create a request ID.
+   */
+  private createRequestId(): string {
+    if (
+      typeof crypto !== "undefined" &&
+      typeof crypto.randomUUID === "function"
+    ) {
+      return crypto.randomUUID();
+    }
+
+    const rand = Math.random().toString(16).slice(2);
+    return `req_${Date.now().toString(16)}_${rand}`;
   }
-
-  const rand = Math.random().toString(16).slice(2);
-  return `req_${Date.now().toString(16)}_${rand}`;
 }

@@ -28,8 +28,8 @@ export function buildResponse(ctx: Context): Response {
     return new Response(body, { status: statusCode, headers });
   }
 
-  // Stream or Buffer body — return as-is
-  if (body instanceof ReadableStream || body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+  // Stream, Buffer, or File body — return as-is
+  if (body instanceof ReadableStream || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof Blob) {
     return new Response(body as any, { status: statusCode, headers });
   }
 

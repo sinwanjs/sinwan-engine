@@ -79,6 +79,27 @@ export class Router implements Plugin {
   delete(path: string, ...handlers: RouteHandler[]) {
     this.add("DELETE", path, handlers);
   }
+  options(path: string, ...handlers: RouteHandler[]) {
+    this.add("OPTIONS", path, handlers);
+  }
+  head(path: string, ...handlers: RouteHandler[]) {
+    this.add("HEAD", path, handlers);
+  }
+  all(path: string, ...handlers: RouteHandler[]) {
+    const methods = [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+      "HEAD",
+    ];
+
+    for (const method of methods) {
+      this.add(method, path, handlers);
+    }
+  }
 
   private add(method: string, path: string, routeHandlers: RouteHandler[]) {
     this.routes.push({
@@ -106,11 +127,7 @@ export class Router implements Plugin {
         const method = ctx.req.method;
         const routes = this.routes;
         const routeCount = routes.length;
-        for (
-          let routeIndex = 0;
-          routeIndex < routeCount;
-          routeIndex += 1
-        ) {
+        for (let routeIndex = 0; routeIndex < routeCount; routeIndex += 1) {
           const route = routes[routeIndex];
           if (!route) continue;
 

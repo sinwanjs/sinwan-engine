@@ -50,7 +50,7 @@ export class EventBus {
 
   // ─── Listener Management (Node-style) ────────────────────
 
-  on(event: string, handler: EventHandler, options?: ListenerOptions): this;
+  on<E extends string>(event: E, handler: EventHandler<E>, options?: ListenerOptions): this;
   on(
     event: symbol,
     handler: (...args: any[]) => void,
@@ -66,9 +66,9 @@ export class EventBus {
     return this;
   }
 
-  addListener(
-    event: string,
-    handler: EventHandler,
+  addListener<E extends string>(
+    event: E,
+    handler: EventHandler<E>,
     options?: ListenerOptions,
   ): this;
   addListener(
@@ -86,7 +86,7 @@ export class EventBus {
     return this;
   }
 
-  once(event: string, handler: EventHandler, options?: ListenerOptions): this;
+  once<E extends string>(event: E, handler: EventHandler<E>, options?: ListenerOptions): this;
   once(
     event: symbol,
     handler: (...args: any[]) => void,
@@ -104,9 +104,9 @@ export class EventBus {
     return this;
   }
 
-  prependListener(
-    event: string,
-    handler: EventHandler,
+  prependListener<E extends string>(
+    event: E,
+    handler: EventHandler<E>,
     options?: ListenerOptions,
   ): this;
   prependListener(
@@ -124,9 +124,9 @@ export class EventBus {
     return this;
   }
 
-  prependOnceListener(
-    event: string,
-    handler: EventHandler,
+  prependOnceListener<E extends string>(
+    event: E,
+    handler: EventHandler<E>,
     options?: ListenerOptions,
   ): this;
   prependOnceListener(

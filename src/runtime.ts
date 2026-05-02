@@ -19,33 +19,27 @@ import type { ErrorHandler } from "./error-handler";
 import type { EventBus } from "./event-bus";
 import type { StepEngine } from "./step-engine";
 import type { Plugin } from "./types";
+import type { Request } from "./types";
+import type { Server } from "bun";
 
 interface RuntimeParams {
   engine: StepEngine;
   bus: EventBus;
   errorHandler: ErrorHandler;
+  globalState: Map<string, any>;
 }
 
 export class Runtime {
   public readonly engine: StepEngine;
   public readonly bus: EventBus;
   public readonly errorHandler: ErrorHandler;
-  private readonly services: Map<string, unknown> = new Map();
+  private readonly globalState: Map<string, any>;
 
   constructor(params: RuntimeParams) {
     this.engine = params.engine;
     this.bus = params.bus;
     this.errorHandler = params.errorHandler;
-  }
-
-  /**
-   * Register an app-wide service into the Dependency Injection container.
-   */
-  provide(name: string, service: unknown): void {
-    if (this.services.has(name)) {
-      throw new Error(`Service "${name}" is already registered.`);
-    }
-    this.services.set(name, service);
+    this.globalState = params.globalState;
   }
 
   /**
@@ -55,12 +49,21 @@ export class Runtime {
     plugin.install(this);
   }
 
+
   /**
    * The main fetch handler for Bun.serve()
    * Automatically creates the Context, executes the pipeline, and returns a Response.
    */
-  async fetch(req: Request): Promise<Response> {
-    const ctx = new Context(req, this.services, { bus: this.bus });
+  async fetch(req: Request, server?: Server<any>): Promise<Response> {
+    // CRITICAL: Always create a NEW context per request to avoid state pollution.
+    // BUT pass the shared global state so it's available everywhere.
+    const ctx = new Context({ 
+      bus: this.bus, 
+      server,
+      global: this.globalState 
+    });
+    ctx.setReq(req);
+    
     await this.execute(ctx);
     return buildResponse(ctx);
   }
@@ -128,7 +131,12 @@ export class Runtime {
         );
       }
 
-      ctx.dispose();
+      // Only dispose now if it's a standard response.
+      // For streaming responses (ReadableStream), disposal happens 
+      // when the stream is cancelled or closed.
+      if (!(ctx.body instanceof ReadableStream)) {
+        ctx.dispose();
+      }
     }
   }
 }
