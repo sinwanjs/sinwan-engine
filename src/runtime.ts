@@ -49,7 +49,6 @@ export class Runtime {
     plugin.install(this);
   }
 
-
   /**
    * The main fetch handler for Bun.serve()
    * Automatically creates the Context, executes the pipeline, and returns a Response.
@@ -57,13 +56,13 @@ export class Runtime {
   async fetch(req: Request, server?: Server<any>): Promise<Response> {
     // CRITICAL: Always create a NEW context per request to avoid state pollution.
     // BUT pass the shared global state so it's available everywhere.
-    const ctx = new Context({ 
-      bus: this.bus, 
+    const ctx = new Context({
+      bus: this.bus,
       server,
-      global: this.globalState 
+      global: this.globalState,
     });
     ctx.setReq(req);
-    
+
     await this.execute(ctx);
     return buildResponse(ctx);
   }
@@ -132,7 +131,7 @@ export class Runtime {
       }
 
       // Only dispose now if it's a standard response.
-      // For streaming responses (ReadableStream), disposal happens 
+      // For streaming responses (ReadableStream), disposal happens
       // when the stream is cancelled or closed.
       if (!(ctx.body instanceof ReadableStream)) {
         ctx.dispose();

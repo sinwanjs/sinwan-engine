@@ -261,7 +261,12 @@ export class Context {
       this.setTimeout(options.timeout);
     }
 
-    this.commitResponse("sse", stream, options.status ?? 200, "text/event-stream");
+    this.commitResponse(
+      "sse",
+      stream,
+      options.status ?? 200,
+      "text/event-stream",
+    );
 
     if (options.retry !== undefined) {
       enqueue(`retry: ${options.retry}\n`);
@@ -289,7 +294,9 @@ export class Context {
     const file = Bun.file(path);
     // Use provided contentType, or file's inferred type (which Bun provides),
     // or fallback to octet-stream if inference failed.
-    const finalType = contentType ?? (file.type !== "" ? file.type : "application/octet-stream");
+    const finalType =
+      contentType ??
+      (file.type !== "" ? file.type : "application/octet-stream");
     this.commitResponse("file", file, status, finalType);
   }
 
@@ -341,7 +348,8 @@ export class Context {
       this.headers.set("Content-Type", contentType);
     }
 
-    const finalContentType = contentType ?? this.headers.get("Content-Type") ?? "unknown";
+    const finalContentType =
+      contentType ?? this.headers.get("Content-Type") ?? "unknown";
 
     this._responded = true;
 
@@ -443,10 +451,15 @@ export class Context {
       // Fallback: Read as blob and then parse (more memory but more stable for some Bun versions)
       try {
         const blob = await this.req.blob();
-        const response = new Response(blob, { headers: { "Content-Type": contentType } });
+        const response = new Response(blob, {
+          headers: { "Content-Type": contentType },
+        });
         this._formData = (await response.formData()) as any;
       } catch (fallbackErr) {
-        const error = new HttpError("Failed to parse multipart/form-data body", 400);
+        const error = new HttpError(
+          "Failed to parse multipart/form-data body",
+          400,
+        );
         this.emitSyncIfAvailable("body:parse:error", { error });
         throw error;
       }

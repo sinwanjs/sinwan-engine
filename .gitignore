@@ -6,6 +6,7 @@ out
 dist
 *.tgz
 
+testapp
 # code coverage
 coverage
 *.lcov

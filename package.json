@@ -2,6 +2,9 @@
   "name": "sinwan-engine",
   "module": "src/index.ts",
   "type": "module",
+  "scripts": {
+    "ex3": "bun --watch src/examples/ex3.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
