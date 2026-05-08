@@ -3,6 +3,7 @@
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
+    "build": "bun run build.ts",
     "ex3": "bun --watch src/examples/ex3.ts"
   },
   "devDependencies": {

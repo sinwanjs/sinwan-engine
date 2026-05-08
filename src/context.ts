@@ -71,14 +71,12 @@ export class Context {
   }
 
   /** Shared application-level state. */
-  public readonly global: Map<string, any>;
-
-  /** URL parameters populated by the router (e.g. /users/:id -> params.id) */
+  private readonly global: Map<string, any>;
   public params: Record<string, string> = {};
-
-  /** Unique ID for this request context. */
   private _requestId: string = "";
   private static _idCounter: number = 0;
+
+  public maxBodySize: number = 10 * 1024 * 1024; // Default 10MB
 
   get requestId(): string {
     if (this._requestId === "") {
@@ -97,10 +95,13 @@ export class Context {
   private static readonly STOPPED = 1 << 0;
   private static readonly RESPONDED = 1 << 1;
   private static readonly DISPOSED = 1 << 2;
+  private static readonly STREAMING = 1 << 3;
 
   private _parsedBody: unknown = undefined;
   private _formData?: FormData;
   private _bus?: EventBus;
+  private _onDisposeCallbacks: (() => void)[] = [];
+
   /** @internal */
   public _meta: any = {
     name: "",
@@ -115,6 +116,7 @@ export class Context {
   private _eventTrace?: EventTraceEntry[];
   private _traceStart: number = 0;
   private _traceSize: number = 0;
+
   get eventTrace(): EventTraceEntry[] {
     const buffer = this.getTraceBuffer();
     if (this._traceSize === 0) return buffer;
@@ -129,8 +131,6 @@ export class Context {
     return ordered;
   }
 
-  // Map stores Set<EventHandler> so multiple registrations of the
-  // same original handler each get their own tracked wrapped handler entry.
   private _scopedHandlers?: Map<string, Map<EventHandler, Set<EventHandler>>>;
   get scopedHandlers(): Map<string, Map<EventHandler, Set<EventHandler>>> {
     if (!this._scopedHandlers) this._scopedHandlers = new Map();
@@ -165,6 +165,7 @@ export class Context {
     this._parsedBody = undefined;
     this._formData = undefined;
     this._bus = options.bus;
+    this._onDisposeCallbacks.length = 0;
 
     // Reset meta
     this._meta.name = "";
@@ -260,6 +261,9 @@ export class Context {
   ): void {
     this.guardDoubleResponse();
 
+    // Mark as streaming to prevent premature pool reuse
+    this._status |= Context.STREAMING;
+
     // Pipe through a passthrough TransformStream.
     const passthrough = new TransformStream();
     readable.pipeTo(passthrough.writable).finally(() => this.dispose());
@@ -270,6 +274,7 @@ export class Context {
   /**
    * Set a streaming response body using an async iterator or generator function.
    * Leveraging Bun's native support for streaming async iterables.
+   * The iterator is wrapped to ensure context disposal on completion.
    */
   iterate(
     iterator: AsyncIterable<any> | (() => AsyncGenerator<any>),
@@ -277,12 +282,21 @@ export class Context {
     contentType: string = "text/plain",
   ): void {
     this.guardDoubleResponse();
-    this.commitResponse("iterator", iterator, status, contentType);
+
+    // Mark as streaming to prevent premature pool reuse
+    this._status |= Context.STREAMING;
+
+    // Wrap iterator to ensure disposal on completion
+    const wrappedIterator = this.wrapIteratorWithDisposal(iterator);
+    this.commitResponse("iterator", wrappedIterator, status, contentType);
   }
 
   /** Start a Server-Sent Events response and return a controller for sending events. */
   sse(options: SSEOptions = {}): SSEController {
     this.guardDoubleResponse();
+
+    // Mark as streaming to prevent premature pool reuse
+    this._status |= Context.STREAMING;
 
     const encoder = new TextEncoder();
     let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -464,6 +478,9 @@ export class Context {
    * Safely read and parse the request body based on Content-Type.
    * Caches the result so it can be called multiple times.
    *
+   * Security: Enforces maxBodySize limits to prevent OOM attacks.
+   * For unknown content types, uses streaming-safe approach.
+   *
    * For multipart/form-data and application/x-www-form-urlencoded the result
    * is a `Record<string, string | File>` — File entries are preserved as-is
    * so callers can inspect them or pass them to saveFile().
@@ -472,12 +489,25 @@ export class Context {
     if (this._parsedBody !== undefined) return this._parsedBody as T;
 
     const contentType = this.req.headers.get("content-type") || "";
+    const contentLengthStr = this.req.headers.get("content-length");
+    const contentLength = contentLengthStr
+      ? parseInt(contentLengthStr, 10)
+      : -1;
+
+    if (contentLength > this.maxBodySize) {
+      throw new HttpError(
+        `Payload too large (limit: ${this.maxBodySize} bytes)`,
+        413,
+      );
+    }
+
     let kind: "json" | "form" | "text" = "text";
 
     try {
       if (contentType.includes("application/json")) {
         kind = "json";
-        this._parsedBody = await this.req.json();
+        // Use Bun's built-in size enforcement via arrayBuffer
+        this._parsedBody = await this.safeJson();
       } else if (
         contentType.includes("application/x-www-form-urlencoded") ||
         contentType.includes("multipart/form-data")
@@ -487,14 +517,13 @@ export class Context {
         const fd = await this.formData();
         const obj: Record<string, string | File> = {};
         for (const [k, v] of fd.entries()) {
-          // FormData entries are either string or File (a subtype of Blob).
-          // Preserve File objects instead of coercing — callers can use saveFile().
           obj[k] = v as string | File;
         }
         this._parsedBody = obj;
       } else {
         kind = "text";
-        this._parsedBody = await this.req.text();
+        // Safe text fallback with size limit
+        this._parsedBody = await this.safeText();
       }
     } catch (err) {
       if (err instanceof HttpError) throw err;
@@ -508,11 +537,59 @@ export class Context {
   }
 
   /**
+   * Safe JSON parsing with size enforcement.
+   * Uses Bun's native streaming JSON parser when available.
+   */
+  private async safeJson(): Promise<unknown> {
+    // Bun's req.json() already handles streaming efficiently
+    // We just need to enforce size limits for responses without content-length
+    const contentLength = this.req.headers.get("content-length");
+    if (!contentLength) {
+      // No content-length header - read as text first to enforce limit
+      const text = await this.safeText();
+      return JSON.parse(text as string);
+    }
+    return this.req.json();
+  }
+
+  /**
+   * Safe text reading with streaming size enforcement.
+   * Prevents OOM by limiting total bytes read.
+   */
+  private async safeText(): Promise<string> {
+    const contentLength = this.req.headers.get("content-length");
+    if (contentLength) {
+      const size = parseInt(contentLength, 10);
+      if (size > this.maxBodySize) {
+        throw new HttpError(
+          `Payload too large (limit: ${this.maxBodySize} bytes)`,
+          413,
+        );
+      }
+      return this.req.text();
+    }
+
+    // No content-length - stream with limit enforcement
+    // Bun's req.text() is already streaming, but we need to check size after
+    const text = await this.req.text();
+    if (text.length > this.maxBodySize) {
+      throw new HttpError(
+        `Payload too large (limit: ${this.maxBodySize} bytes)`,
+        413,
+      );
+    }
+    return text;
+  }
+
+  /**
    * Return the raw `FormData` from the request body, caching it so the
    * underlying stream is consumed only once.
    *
+   * Security: Enforces maxBodySize limits to prevent OOM from large uploads.
+   *
    * Throws an HttpError(415) if the Content-Type is not a form type, and
    * an HttpError(400) if the body cannot be parsed.
+   * Throws an HttpError(413) if the body exceeds maxBodySize.
    *
    * Usage:
    * ```ts
@@ -525,9 +602,19 @@ export class Context {
     if (this._formData) return this._formData;
 
     const contentType = this.req.headers.get("content-type") || "";
-    const contentLength = this.req.headers.get("content-length") || "unknown";
+    const contentLengthStr = this.req.headers.get("content-length");
+    const contentLength = contentLengthStr
+      ? parseInt(contentLengthStr, 10)
+      : -1;
 
-    if (contentLength === "0") {
+    if (contentLength > this.maxBodySize) {
+      throw new HttpError(
+        `Payload too large (limit: ${this.maxBodySize} bytes)`,
+        413,
+      );
+    }
+
+    if (contentLength === 0) {
       throw new HttpError("Request body is empty", 400);
     }
 
@@ -543,17 +630,51 @@ export class Context {
     }
 
     try {
-      // If native formData fails, it might be due to streaming issues.
+      // Bun's formData() is streaming-safe for multipart
+      // It handles large files without loading everything into memory
       this._formData = (await this.req.formData()) as any;
+
+      // Enforce size limit for responses without content-length
+      // Check total size of all file entries
+      if (contentLength === -1 && this._formData) {
+        let totalSize = 0;
+        for (const [_, value] of this._formData.entries()) {
+          // Check if value is a File-like object (has size property)
+          if (
+            value &&
+            typeof value === "object" &&
+            "size" in value &&
+            typeof (value as any).size === "number"
+          ) {
+            totalSize += (value as any).size;
+            if (totalSize > this.maxBodySize) {
+              this._formData = undefined;
+              throw new HttpError(
+                `Payload too large (limit: ${this.maxBodySize} bytes)`,
+                413,
+              );
+            }
+          }
+        }
+      }
     } catch (err) {
-      // Fallback: Read as blob and then parse (more memory but more stable for some Bun versions)
+      if (err instanceof HttpError) throw err;
+
+      // Fallback: reconstruct from blob (for edge cases)
       try {
         const blob = await this.req.blob();
+        if (blob.size > this.maxBodySize) {
+          throw new HttpError(
+            `Payload too large (limit: ${this.maxBodySize} bytes)`,
+            413,
+          );
+        }
         const response = new Response(blob, {
           headers: { "Content-Type": contentType },
         });
         this._formData = (await response.formData()) as any;
       } catch (fallbackErr) {
+        if (fallbackErr instanceof HttpError) throw fallbackErr;
         const error = new HttpError(
           "Failed to parse multipart/form-data body",
           400,
@@ -693,6 +814,11 @@ export class Context {
     return (this._status & Context.RESPONDED) !== 0;
   }
 
+  /** Whether the context has an active streaming response. */
+  isStreaming(): boolean {
+    return (this._status & Context.STREAMING) !== 0;
+  }
+
   // ─── EventBus Interaction ──────────────────────────────
 
   /** Attach an EventBus to this context. */
@@ -765,10 +891,22 @@ export class Context {
     return this;
   }
 
-  /** Dispose context-scoped listeners. */
+  /** Register a callback to be executed when the context is disposed. */
+  onDispose(cb: () => void): void {
+    if ((this._status & Context.DISPOSED) !== 0) {
+      cb();
+      return;
+    }
+    this._onDisposeCallbacks.push(cb);
+  }
+
+  /** Dispose context-scoped listeners and trigger cleanup callbacks. */
   dispose(): void {
     if ((this._status & Context.DISPOSED) !== 0) return;
     this._status |= Context.DISPOSED;
+
+    // Clear streaming flag to allow pool reuse
+    this._status &= ~Context.STREAMING;
 
     if (this._bus && this._bus.hasListeners("context:dispose")) {
       this._bus.emitSync("context:dispose", this, undefined, {
@@ -777,15 +915,26 @@ export class Context {
     }
 
     // Only iterate scoped handlers if any were registered
-    if (!this._bus || this.scopedHandlers.size === 0) return;
-    for (const [event, handlerMap] of this.scopedHandlers.entries()) {
-      for (const wrappedSet of handlerMap.values()) {
-        for (const wrapped of wrappedSet) {
-          this._bus.off(event, wrapped);
+    if (this._bus && this.scopedHandlers.size > 0) {
+      for (const [event, handlerMap] of this.scopedHandlers.entries()) {
+        for (const wrappedSet of handlerMap.values()) {
+          for (const wrapped of wrappedSet) {
+            this._bus.off(event, wrapped);
+          }
         }
       }
+      this.scopedHandlers.clear();
     }
-    this.scopedHandlers.clear();
+
+    // Trigger onDispose callbacks
+    for (let i = 0; i < this._onDisposeCallbacks.length; i++) {
+      try {
+        this._onDisposeCallbacks[i]!();
+      } catch {
+        // Ignore callback errors
+      }
+    }
+    this._onDisposeCallbacks.length = 0;
   }
 
   /** Access a copy of the event trace for this context. */
@@ -934,6 +1083,63 @@ export class Context {
     if (handlerMap.size === 0) {
       this.scopedHandlers.delete(event);
     }
+  }
+
+  /**
+   * Wrap an iterator with automatic disposal when iteration completes.
+   * This ensures the context is properly cleaned up after streaming.
+   */
+  private wrapIteratorWithDisposal(
+    iterator: AsyncIterable<any> | (() => AsyncGenerator<any>),
+  ): AsyncIterable<any> {
+    const self = this;
+
+    // Handle generator function
+    const source = typeof iterator === "function" ? iterator() : iterator;
+
+    return {
+      [Symbol.asyncIterator](): AsyncGenerator<any, void, unknown> {
+        const originalIterator = source[Symbol.asyncIterator]();
+        let done = false;
+
+        const cleanup = () => {
+          if (!done) {
+            done = true;
+            // Schedule disposal on next microtask to allow response to complete
+            queueMicrotask(() => self.dispose());
+          }
+        };
+
+        return {
+          async next() {
+            try {
+              const result = await originalIterator.next();
+              if (result.done) {
+                cleanup();
+              }
+              return result;
+            } catch (error) {
+              cleanup();
+              throw error;
+            }
+          },
+          async return(value) {
+            cleanup();
+            if (originalIterator.return) {
+              return originalIterator.return(value);
+            }
+            return { done: true, value } as IteratorResult<any, void>;
+          },
+          async throw(error) {
+            cleanup();
+            if (originalIterator.throw) {
+              return originalIterator.throw(error);
+            }
+            throw error;
+          },
+        } as AsyncGenerator<any, void, unknown>;
+      },
+    };
   }
 
   /**

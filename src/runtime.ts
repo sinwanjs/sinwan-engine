@@ -18,6 +18,7 @@ interface RuntimeParams {
   bus: EventBus;
   errorHandler: ErrorHandler;
   globalState: Map<string, any>;
+  maxPoolSize?: number;
 }
 
 export class Runtime {
@@ -26,11 +27,8 @@ export class Runtime {
   public readonly errorHandler: ErrorHandler;
   private readonly globalState: Map<string, any>;
   private readonly contextPool: Context[] = [];
-  private readonly maxPoolSize: number = 1000;
+  private readonly maxPoolSize: number;
 
-  // Reusable event payloads to avoid allocations
-  private readonly startPayload = { method: "", url: "" };
-  private readonly endPayload = { durationMs: 0 };
   private readonly runtimeEmitOptions = { source: "runtime" as const };
 
   constructor(params: RuntimeParams) {
@@ -38,6 +36,7 @@ export class Runtime {
     this.bus = params.bus;
     this.errorHandler = params.errorHandler;
     this.globalState = params.globalState;
+    this.maxPoolSize = params.maxPoolSize ?? 1000;
   }
 
   /**
@@ -59,36 +58,28 @@ export class Runtime {
     const hasEnd = bus.hasListeners("request:end");
     const startTime = hasEnd ? performance.now() : 0;
 
+    // Fast-path: check if we can run synchronously
+    const hasStart = bus.hasListeners("request:start");
+
     try {
-      if (bus.hasListeners("request:start")) {
-        this.startPayload.method = req.method;
-        this.startPayload.url = req.url;
+      if (hasStart) {
         return (async () => {
           try {
             const startResult = await bus.emitAsync(
               "request:start",
               ctx,
-              this.startPayload,
+              { method: req.method, url: req.url },
               this.runtimeEmitOptions,
             );
             if (startResult === "STOP" || ctx.isStopped()) {
-              return this.finalizeResponse(ctx);
+              return this.finalizeResponse(ctx, startTime);
             }
             const runResult = this.engine.run(ctx, bus);
             if (runResult instanceof Promise) await runResult;
-            if (hasEnd && !ctx.isStopped()) {
-              this.endPayload.durationMs = performance.now() - startTime;
-              await bus.emitAsync(
-                "request:end",
-                ctx,
-                this.endPayload,
-                this.runtimeEmitOptions,
-              );
-            }
-            return this.finalizeResponse(ctx);
+            return this.finalizeResponse(ctx, startTime);
           } catch (error: unknown) {
             await this.handleError(ctx, error);
-            return this.finalizeResponse(ctx);
+            return this.finalizeResponse(ctx, startTime);
           }
         })();
       }
@@ -98,49 +89,62 @@ export class Runtime {
         return (async () => {
           try {
             await runResult;
-            if (hasEnd && !ctx.isStopped()) {
-              this.endPayload.durationMs = performance.now() - startTime;
-              await bus.emitAsync(
-                "request:end",
-                ctx,
-                this.endPayload,
-                this.runtimeEmitOptions,
-              );
-            }
-            return this.finalizeResponse(ctx);
+            return this.finalizeResponse(ctx, startTime);
           } catch (error: unknown) {
             await this.handleError(ctx, error);
-            return this.finalizeResponse(ctx);
+            return this.finalizeResponse(ctx, startTime);
           }
         })();
       }
 
-      if (hasEnd && !ctx.isStopped()) {
-        this.endPayload.durationMs = performance.now() - startTime;
-        bus.emitSync(
-          "request:end",
-          ctx,
-          this.endPayload,
-          this.runtimeEmitOptions,
-        );
-      }
-      return this.finalizeResponse(ctx);
+      return this.finalizeResponse(ctx, startTime);
     } catch (error: unknown) {
+      // Sync error in runResult or before runResult
       return (async () => {
         await this.handleError(ctx, error);
-        return this.finalizeResponse(ctx);
+        return this.finalizeResponse(ctx, startTime);
       })();
     }
   }
 
-  private finalizeResponse(ctx: Context): Response {
+  private finalizeResponse(ctx: Context, startTime: number): Response {
     if (!ctx.hasResponded()) {
       ctx.json({ error: "No response was produced." }, 500);
     }
+
     const res = buildResponse(ctx);
-    if (!(ctx.body instanceof ReadableStream)) {
-      this.releaseContext(ctx);
+
+    // Ensure request:end fires
+    if (startTime > 0) {
+      const durationMs = performance.now() - startTime;
+      if (this.bus.hasListeners("request:end")) {
+        // We use emitSync here to avoid creating more promises in the finalization phase.
+        // Tracing/Metrics listeners should generally be sync or handle their own async.
+        this.bus.emitSync(
+          "request:end",
+          ctx,
+          { durationMs },
+          this.runtimeEmitOptions,
+        );
+      }
     }
+
+    const body = ctx.body;
+    // Check if body is a stream or iterator that needs the context to stay alive
+    const isPersistent =
+      body instanceof ReadableStream ||
+      (body &&
+        typeof body === "object" &&
+        (Symbol.asyncIterator in body || (body as any)._isSSE));
+
+    if (!isPersistent) {
+      this.releaseContext(ctx);
+    } else {
+      // The Context itself must handle its own release when the stream closes.
+      // We'll implement a 'dispose' hook in Context.
+      ctx.onDispose(() => this.releaseContext(ctx));
+    }
+
     return res;
   }
 

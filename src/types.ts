@@ -32,7 +32,9 @@ export type LifecycleEvent =
 export type StepResult =
   | { type: "continue" }
   | { type: "stop" }
-  | { type: "error"; error: unknown };
+  | { type: "error"; error: unknown }
+  | { type: "skip" }
+  | { type: "respond" };
 
 /**
  * A named, deterministic execution unit.
@@ -40,7 +42,10 @@ export type StepResult =
  */
 export type Step = {
   readonly name: string;
-  run(ctx: Context, bus: EventBus): Promise<StepResult | void> | StepResult | void;
+  run(
+    ctx: Context,
+    bus: EventBus,
+  ): Promise<StepResult | void> | StepResult | void;
 };
 
 // ─── Event System ───────────────────────────────────────────
@@ -85,8 +90,7 @@ export type EventHandler<E extends string = string, P = any> = (
 ) => Promise<unknown> | unknown;
 
 /** Map of event names to their handler signatures. */
-export type EventMap = Record<string,
-  EventHandler<string>>;
+export type EventMap = Record<string, EventHandler<string>>;
 
 export type EmitResult = "CONTINUE" | "STOP";
 
@@ -128,6 +132,10 @@ export interface EventBusOptions {
   maxListeners?: number;
   enableWildcards?: boolean;
   wildcardDelimiter?: string;
+  /** Maximum cache entries for dispatch events. Default: 500. Set to 0 to disable. */
+  maxDispatchCacheSize?: number;
+  /** Maximum cache entries for hasListeners checks. Default: 500. Set to 0 to disable. */
+  maxHasListenersCacheSize?: number;
 }
 
 export interface ContextOptions {
@@ -145,7 +153,15 @@ export interface SaveFileOptions {
   allowedTypes?: string[];
 }
 
-export type ResponseKind = "json" | "text" | "stream" | "sse" | "file" | "buffer" | "iterator" | "unknown";
+export type ResponseKind =
+  | "json"
+  | "text"
+  | "stream"
+  | "sse"
+  | "file"
+  | "buffer"
+  | "iterator"
+  | "unknown";
 
 export interface InternalEventPayloads {
   "request:start": { method: string; url: string };
@@ -154,7 +170,13 @@ export interface InternalEventPayloads {
   "step:start": { name: string };
   "step:end": {
     name: string;
-    outcome: "continue" | "stop" | "responded" | "stopped";
+    outcome:
+      | "continue"
+      | "stop"
+      | "responded"
+      | "stopped"
+      | "skipped"
+      | "responded_early";
   };
   "step:error": { name: string; error: unknown };
   "response:set": {
@@ -174,7 +196,10 @@ export interface InternalEventPayloads {
 }
 
 export type InternalEventMap = {
-  [K in keyof InternalEventPayloads]: EventHandler<K & string, InternalEventPayloads[K]>;
+  [K in keyof InternalEventPayloads]: EventHandler<
+    K & string,
+    InternalEventPayloads[K]
+  >;
 };
 
 // ─── Error System ───────────────────────────────────────────
@@ -197,4 +222,4 @@ export interface Plugin {
   install(app: Runtime): void;
 }
 
-export interface Request<T extends string = string> extends BunRequest<T> { }
+export interface Request<T extends string = string> extends BunRequest<T> {}

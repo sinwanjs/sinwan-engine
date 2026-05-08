@@ -4,17 +4,33 @@ import { ErrorHandler, type ErrorHook } from "./error-handler";
 import { Runtime } from "./runtime";
 import { Router, type RouteHandler } from "./router";
 import { LifecycleManager } from "./lifecycle-manager";
-import { Context } from "./context";
+import type { Context } from "./context";
 import type { Server } from "bun";
 import type { Request } from "./types";
+
+/**
+ * Minimal lifecycle context for app-level events.
+ * Provides only what lifecycle events need, avoiding fake Context construction.
+ * Uses type assertion since lifecycle events only need requestId and isStopped.
+ */
+function createLifecycleContext(): Context {
+  return {
+    requestId: "lifecycle",
+    isStopped: () => false,
+    recordEvent: () => {},
+    hasResponded: () => false,
+    isStreaming: () => false,
+  } as unknown as Context;
+}
 
 export interface AppOptions {
   onError?: ErrorHook;
   idleTimeout?: number;
+  /** Maximum number of contexts to keep in the pool. Default: 1000 */
+  maxPoolSize?: number;
 }
 
 export class Sinwan {
-
   /** Step Engine: Executes steps in order.*/
   /** Each step is a function that takes the context and returns a Promise.*/
   public readonly engine: StepEngine;
@@ -32,10 +48,8 @@ export class Sinwan {
   public readonly errorHandler: ErrorHandler;
 
   /** Lifecycle Manager: Manages the application lifecycle.*/
-  public readonly lifecycle: LifecycleManager;
-
-  /** Context: Manages the context for the application.*/
-  private readonly context: Context;
+  private readonly lifecycle: LifecycleManager;
+  private readonly lifecycleCtx: Context;
 
   /** Shared State: Manages the shared state for the application.*/
   private readonly sharedState = new Map<string, any>();
@@ -51,6 +65,7 @@ export class Sinwan {
    * @param options Configuration options for the application.
    * @param options.onError Optional error handler function.
    * @param options.idleTimeout Optional idle timeout in milliseconds.
+   * @param options.maxPoolSize Maximum context pool size (default: 1000).
    */
   constructor(options: AppOptions = {}) {
     this.config = options;
@@ -58,16 +73,18 @@ export class Sinwan {
     this.bus = new EventBus();
     this.errorHandler = new ErrorHandler({ onError: options.onError });
     this.router = new Router();
-    this.context = new Context({ bus: this.bus, global: this.sharedState });
+
+    this.lifecycleCtx = createLifecycleContext();
 
     this.runtime = new Runtime({
       engine: this.engine,
       bus: this.bus,
       errorHandler: this.errorHandler,
       globalState: this.sharedState,
+      maxPoolSize: options.maxPoolSize,
     });
 
-    this.lifecycle = new LifecycleManager(this.bus, this.context);
+    this.lifecycle = new LifecycleManager(this.bus);
 
     this.runtime.use(this.router);
   }
@@ -164,7 +181,7 @@ export class Sinwan {
   group(prefix: string, callback: (router: Router) => void) {
     this.router.group(prefix, callback);
   }
-  
+
   /**
    * Serve static files from a directory.
    * @param prefix The URL prefix (e.g. "/public")
@@ -179,19 +196,58 @@ export class Sinwan {
    * @param port The port number to listen on.
    * @param callback Optional callback function to execute after the server starts.
    * @returns The Bun server instance.
+   * @throws If the server fails to start or lifecycle transition fails.
    */
-  listen(port: number | string = 3000, callback?: () => void): Server<any> {
-    this.server = Bun.serve({
-      port,
-      idleTimeout: this.config.idleTimeout,
-      fetch: (req, server) => this.runtime.fetch(req as Request, server),
-    });
+  async listen(
+    port: number | string = 3000,
+    callback?: () => void,
+  ): Promise<Server<any>> {
+    // Initialize lifecycle if not already done
+    if (this.lifecycle.getState() === ("idle" as any)) {
+      try {
+        await this.lifecycle.init({ options: this.config });
+      } catch (error) {
+        // Re-throw with context for better error messages
+        throw new Error(
+          `Failed to initialize application: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+    }
 
-    // Transition to READY phase
-    this.lifecycle.ready({ port, server: this.server });
+    try {
+      this.server = Bun.serve({
+        port,
+        idleTimeout: this.config.idleTimeout,
+        fetch: (req, server) => this.runtime.fetch(req as Request, server),
+      });
+    } catch (error) {
+      throw new Error(
+        `Failed to start server on port ${port}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+
+    // Transition to READY phase (awaiting is critical for deterministic startup)
+    try {
+      await this.lifecycle.ready({ port, server: this.server });
+    } catch (error) {
+      // Server started but lifecycle failed - stop server and throw
+      this.server.stop(true);
+      this.server = undefined;
+      throw new Error(
+        `Failed to transition to ready state: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
 
     if (callback) {
-      callback();
+      try {
+        callback();
+      } catch (error) {
+        // Log but don't fail - callback errors shouldn't crash the server
+        console.error("[Sinwan] Listen callback error:", error);
+      }
     }
 
     return this.server;

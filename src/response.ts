@@ -10,13 +10,13 @@ import type { Context } from "./context";
 /**
  * Build a Web API Response from the finalized Context.
  *
- * Body handling:
- *  - string → sent as-is (text/plain or whatever Content-Type is set)
- *  - object/array → JSON.stringify'd, Content-Type set to application/json
- *  - null/undefined → empty body with current status code
+ * Optimization: Only allocates Headers if they were actually used.
  */
 export function buildResponse(ctx: Context): Response {
-  const { body, statusCode, headers } = ctx;
+  const { body, statusCode } = ctx;
+
+  // Check if headers were ever allocated (lazy init)
+  const headers = ctx["_headers"];
 
   // Most common fast path: pre-serialized string body (JSON or text)
   if (typeof body === "string") {
@@ -42,9 +42,5 @@ export function buildResponse(ctx: Context): Response {
     return new Response(body as any, { status: statusCode, headers });
   }
 
-  // Fallback: Object/array body — serialize to JSON
-  if (!headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  return new Response(JSON.stringify(body), { status: statusCode, headers });
+  return Response.json(body, { status: statusCode, headers });
 }

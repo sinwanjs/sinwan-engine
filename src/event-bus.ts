@@ -27,21 +27,40 @@ import type {
 export class EventBus {
   private readonly emitter: EventEmitter;
   private readonly options: Required<
-    Pick<EventBusOptions, "enableWildcards" | "wildcardDelimiter">
+    Pick<
+      EventBusOptions,
+      | "enableWildcards"
+      | "wildcardDelimiter"
+      | "maxDispatchCacheSize"
+      | "maxHasListenersCacheSize"
+    >
   > &
     EventBusOptions;
   private sequence: number = 0;
-  private readonly dispatchCache: Map<string, string[]> = new Map();
+
+  // LRU cache for dispatch events with access order tracking
+  private readonly dispatchCache: Map<string, string[]>;
+  private readonly dispatchAccessOrder: string[] = [];
+
+  // LRU cache for hasListeners checks with version tracking
   private readonly hasListenersCache: Map<
     string,
     { value: boolean; version: number }
   > = new Map();
+  private readonly hasListenersAccessOrder: string[] = [];
   private hasListenersCacheVersion: number = 0;
+
+  private readonly abortHandlers = new WeakMap<
+    (...args: any[]) => void,
+    { signal: AbortSignal; abortHandler: () => void }
+  >();
 
   constructor(options: EventBusOptions = {}) {
     this.options = {
       enableWildcards: options.enableWildcards !== false,
       wildcardDelimiter: options.wildcardDelimiter ?? ":",
+      maxDispatchCacheSize: options.maxDispatchCacheSize ?? 500,
+      maxHasListenersCacheSize: options.maxHasListenersCacheSize ?? 500,
       ...options,
     };
 
@@ -52,6 +71,10 @@ export class EventBus {
     if (options.maxListeners !== undefined) {
       this.emitter.setMaxListeners(options.maxListeners);
     }
+
+    // Initialize dispatch cache (disabled if size is 0)
+    this.dispatchCache =
+      this.options.maxDispatchCacheSize > 0 ? new Map() : new Map();
   }
 
   // ─── Listener Management (Node-style) ────────────────────
@@ -62,14 +85,29 @@ export class EventBus {
     options?: ListenerOptions,
   ): this;
   on(
+    event: symbol,
+    handler: (...args: any[]) => void,
+    options?: ListenerOptions,
+  ): this;
+  on(
+    event: string,
+    handler: (...args: any[]) => void,
+    options?: ListenerOptions,
+  ): this;
+  on(
+    event: string | symbol,
+    handler: (...args: any[]) => void,
+    options?: ListenerOptions,
+  ): this;
+  on(
     event: string | symbol,
     handler: (...args: any[]) => void,
     options?: ListenerOptions,
   ): this {
     if (options?.signal?.aborted) return this;
 
-    this.emitter.on(event, handler);
-    this.attachAbort(event, handler, options, false);
+    const wrapped = this.wrapWithCleanup(event, handler, options, false);
+    this.emitter.on(event, wrapped);
     this.invalidateCaches();
     return this;
   }
@@ -89,12 +127,7 @@ export class EventBus {
     handler: (...args: any[]) => void,
     options?: ListenerOptions,
   ): this {
-    if (options?.signal?.aborted) return this;
-
-    this.emitter.on(event, handler);
-    this.attachAbort(event, handler, options, false);
-    this.invalidateCaches();
-    return this;
+    return this.on(event, handler as any, options);
   }
 
   once<E extends string>(
@@ -114,8 +147,8 @@ export class EventBus {
   ): this {
     if (options?.signal?.aborted) return this;
 
-    this.emitter.once(event, handler);
-    this.attachAbort(event, handler, options, true);
+    const wrapped = this.wrapWithCleanup(event, handler, options, true);
+    this.emitter.once(event, wrapped);
     this.invalidateCaches();
     return this;
   }
@@ -137,8 +170,8 @@ export class EventBus {
   ): this {
     if (options?.signal?.aborted) return this;
 
-    this.emitter.prependListener(event, handler);
-    this.attachAbort(event, handler, options, false);
+    const wrapped = this.wrapWithCleanup(event, handler, options, false);
+    this.emitter.prependListener(event, wrapped);
     this.invalidateCaches();
     return this;
   }
@@ -160,13 +193,21 @@ export class EventBus {
   ): this {
     if (options?.signal?.aborted) return this;
 
-    this.emitter.prependOnceListener(event, handler);
-    this.attachAbort(event, handler, options, true);
+    const wrapped = this.wrapWithCleanup(event, handler, options, true);
+    this.emitter.prependOnceListener(event, wrapped);
     this.invalidateCaches();
     return this;
   }
 
   off(event: string | symbol, handler: (...args: any[]) => void): this {
+    // We need to find if we have a wrapped version of this handler
+    // Since we don't store a map of original -> wrapped for all handlers (that would be expensive),
+    // we only do it for those with AbortSignals.
+    const entry = this.abortHandlers.get(handler);
+    if (entry) {
+      entry.signal.removeEventListener("abort", entry.abortHandler);
+      this.abortHandlers.delete(handler);
+    }
     this.emitter.off(event, handler);
     this.invalidateCaches();
     return this;
@@ -176,9 +217,7 @@ export class EventBus {
     event: string | symbol,
     handler: (...args: any[]) => void,
   ): this {
-    this.emitter.removeListener(event, handler);
-    this.invalidateCaches();
-    return this;
+    return this.off(event, handler);
   }
 
   removeAllListeners(event?: string | symbol): this {
@@ -210,6 +249,32 @@ export class EventBus {
 
   private invalidateCaches(): void {
     this.hasListenersCacheVersion += 1;
+
+    // LRU eviction for hasListeners cache
+    const maxSize = this.options.maxHasListenersCacheSize;
+    if (maxSize > 0 && this.hasListenersCache.size > maxSize) {
+      // Remove oldest entries (first in the access order array)
+      const toRemove = this.hasListenersAccessOrder.splice(
+        0,
+        this.hasListenersCache.size - maxSize,
+      );
+      for (const key of toRemove) {
+        this.hasListenersCache.delete(key);
+      }
+    }
+
+    // LRU eviction for dispatch cache
+    const maxDispatchSize = this.options.maxDispatchCacheSize;
+    if (maxDispatchSize > 0 && this.dispatchCache.size > maxDispatchSize) {
+      // Remove oldest entries
+      const toRemove = this.dispatchAccessOrder.splice(
+        0,
+        this.dispatchCache.size - maxDispatchSize,
+      );
+      for (const key of toRemove) {
+        this.dispatchCache.delete(key);
+      }
+    }
   }
 
   // ─── Fast-Path Check ───────────────────────────────────
@@ -220,16 +285,32 @@ export class EventBus {
    * Use this to skip emitAsync/emitSync entirely on the hot path.
    */
   hasListeners(event: string): boolean {
+    // Skip caching if disabled
+    if (this.options.maxHasListenersCacheSize === 0) {
+      return this.computeHasListeners(event);
+    }
+
     const cached = this.hasListenersCache.get(event);
     if (cached && cached.version === this.hasListenersCacheVersion) {
+      // Update access order for LRU
+      this.updateAccessOrder(this.hasListenersAccessOrder, event);
       return cached.value;
     }
 
     const result = this.computeHasListeners(event);
+
+    // LRU eviction before adding new entry
+    const maxSize = this.options.maxHasListenersCacheSize;
+    if (this.hasListenersCache.size >= maxSize) {
+      const oldest = this.hasListenersAccessOrder.shift();
+      if (oldest) this.hasListenersCache.delete(oldest);
+    }
+
     this.hasListenersCache.set(event, {
       value: result,
       version: this.hasListenersCacheVersion,
     });
+    this.hasListenersAccessOrder.push(event);
     return result;
   }
 
@@ -260,6 +341,43 @@ export class EventBus {
     options?: EmitOptions,
   ): Promise<EmitResult> {
     return this.emitInternalAsync(event, ctx, payload, options);
+  }
+
+  /**
+   * Parallel emission: fires all listeners concurrently.
+   * Does NOT respect STOP signals (cannot halt a parallel batch).
+   * Useful for logging, metrics, and side-effects.
+   */
+  async emitParallel(
+    event: string,
+    ctx: Context,
+    payload?: unknown,
+    options?: EmitOptions,
+  ): Promise<void> {
+    const dispatchEvents = this.getDispatchEvents(event);
+    const promises: Promise<any>[] = [];
+
+    for (let i = 0; i < dispatchEvents.length; i++) {
+      const dispatchEvent = dispatchEvents[i]!;
+      const listeners = this.emitter.rawListeners(dispatchEvent);
+      if (listeners.length === 0) continue;
+
+      const meta = this.buildMeta(dispatchEvent, event, ctx, options);
+      this.trace(ctx, meta, payload);
+
+      for (let j = 0; j < listeners.length; j++) {
+        const listener = listeners[j]!;
+        try {
+          const result = listener.call(this.emitter, ctx, payload, meta);
+          if ((result as any) instanceof Promise)
+            promises.push(result as unknown as Promise<unknown>);
+        } catch (error) {
+          this.emitErrorMonitor(error, ctx, meta);
+        }
+      }
+    }
+
+    if (promises.length > 0) await Promise.all(promises);
   }
 
   emitSync(
@@ -371,10 +489,6 @@ export class EventBus {
             meta,
           ) as unknown;
 
-          // Detect async handlers registered on the sync path.
-          // A returned Promise means the handler is async — its STOP signal
-          // will never be seen here. Warn loudly in development so the caller
-          // knows to use emitAsync() instead.
           if (
             typeof result === "object" &&
             result !== null &&
@@ -407,7 +521,7 @@ export class EventBus {
     ctx: Context,
     options?: EmitOptions,
   ): EventMeta {
-    const meta = {
+    return {
       name,
       event,
       timestamp: options?.timestamp || Date.now(),
@@ -415,23 +529,53 @@ export class EventBus {
       requestId: options?.requestId || ctx.requestId,
       source: options?.source,
     };
-    return meta;
   }
 
   private getDispatchEvents(event: string): string[] {
-    // Cache dispatch event lists — the wildcard expansion for a given
-    // event name never changes, so compute once and reuse.
-    let cached = this.dispatchCache.get(event);
-    if (cached) return cached;
+    // Skip caching if disabled
+    if (this.options.maxDispatchCacheSize === 0) {
+      return this.computeDispatchEvents(event);
+    }
 
+    let cached = this.dispatchCache.get(event);
+    if (cached) {
+      // Update access order for LRU
+      this.updateAccessOrder(this.dispatchAccessOrder, event);
+      return cached;
+    }
+
+    const events = this.computeDispatchEvents(event);
+
+    // LRU eviction before adding new entry
+    const maxSize = this.options.maxDispatchCacheSize;
+    if (this.dispatchCache.size >= maxSize) {
+      const oldest = this.dispatchAccessOrder.shift();
+      if (oldest) this.dispatchCache.delete(oldest);
+    }
+
+    this.dispatchCache.set(event, events);
+    this.dispatchAccessOrder.push(event);
+    return events;
+  }
+
+  /**
+   * Update access order for LRU tracking (move to end = most recently used)
+   */
+  private updateAccessOrder(order: string[], key: string): void {
+    const idx = order.indexOf(key);
+    if (idx !== -1) {
+      order.splice(idx, 1);
+      order.push(key);
+    }
+  }
+
+  /**
+   * Compute dispatch events without caching
+   */
+  private computeDispatchEvents(event: string): string[] {
     const events: string[] = [event];
 
-    if (!this.options.enableWildcards) {
-      this.dispatchCache.set(event, events);
-      return events;
-    }
-    if (event.includes("*")) {
-      this.dispatchCache.set(event, events);
+    if (!this.options.enableWildcards || event.includes("*")) {
       return events;
     }
 
@@ -440,65 +584,58 @@ export class EventBus {
       const parts = event.split(delimiter);
       for (let i = parts.length - 1; i >= 1; i -= 1) {
         const prefix = parts.slice(0, i).join(delimiter);
-        const wildcard = `${prefix}${delimiter}*`;
-        if (!events.includes(wildcard)) events.push(wildcard);
+        events.push(`${prefix}${delimiter}*`);
       }
     }
 
     if (!events.includes("*")) events.push("*");
-    this.dispatchCache.set(event, events);
     return events;
   }
 
-  /**
-   * Wire up AbortSignal-based cleanup for a registered handler.
-   * We wrap the handler in a thin shim that removes the abort listener when
-   * the event fires. This keeps the emitter's listener list clean — only the
-   * real handler (or its shim) is ever registered.
-   */
-  private attachAbort(
+  private wrapWithCleanup(
     event: string | symbol,
     handler: (...args: any[]) => void,
     options: ListenerOptions | undefined,
     isOnce: boolean,
-  ): void {
+  ): (...args: any[]) => void {
     const signal = options?.signal;
-    if (!signal) return;
+    if (!signal) return handler;
 
-    // Already-aborted case: guard already handled by callers, but be defensive.
-    if (signal.aborted) {
-      this.emitter.off(event, handler);
-      return;
-    }
+    if (signal.aborted) return () => {};
 
-    // abortHandler removes the real handler when the signal fires.
-    const abortHandler = () => this.emitter.off(event, handler);
+    // Define wrapped first so abortHandler can reference it
+    let wrapped: (...args: any[]) => void;
+    let abortHandler: () => void;
+    let cleanedUp = false;
+
+    // Cleanup function to ensure we don't double-clean
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      signal.removeEventListener("abort", abortHandler);
+      this.abortHandlers.delete(handler);
+    };
+
+    abortHandler = () => {
+      cleanup();
+      this.emitter.off(event, wrapped);
+    };
+
+    wrapped = (...args: any[]) => {
+      cleanup();
+      return handler(...args);
+    };
+
+    // Register abort listener
     signal.addEventListener("abort", abortHandler, { once: true });
 
-    if (isOnce) {
-      // When the event fires and the once-handler runs, we no longer need the
-      // abort listener on the signal. Instead of registering a second emitter
-      // listener (the old approach), we replace the handler on the emitter with
-      // a shim that self-cleans the signal listener and then delegates.
-      //
-      // Step 1: remove the plain once-registration we just made in the caller.
-      this.emitter.off(event, handler);
+    // Store for manual cleanup via off()
+    this.abortHandlers.set(handler, { signal, abortHandler });
 
-      // Step 2: register a shim that cleans up the abort listener, then calls
-      // the original handler with all its arguments.
-      const shim = (...args: any[]) => {
-        signal.removeEventListener("abort", abortHandler);
-        return handler(...args);
-      };
+    // Copy properties for identification
+    Object.defineProperty(wrapped, "name", { value: handler.name });
 
-      // Preserve the original handler reference on the shim so that external
-      // callers using `emitter.rawListeners()` can still identify it.
-      Object.defineProperty(shim, "name", { value: handler.name });
-
-      this.emitter.once(event, shim);
-    }
-    // For persistent (non-once) listeners, abortHandler is all we need.
-    // When the signal fires it removes the handler; no cleanup shim required.
+    return wrapped;
   }
 
   private trace(ctx: Context, meta: EventMeta, payload: unknown): void {
@@ -513,18 +650,12 @@ export class EventBus {
     meta: EventMeta,
   ): void {
     const listeners = this.emitter.rawListeners(errorMonitor);
-    for (
-      let listenerIndex = 0;
-      listenerIndex < listeners.length;
-      listenerIndex += 1
-    ) {
-      const listener = listeners[listenerIndex];
-      if (!listener) continue;
-
+    for (let i = 0; i < listeners.length; i++) {
+      const listener = listeners[i]!;
       try {
         listener.call(this.emitter, error, ctx, meta);
       } catch {
-        // Monitoring should not interfere with runtime execution
+        // Monitoring should not interfere
       }
     }
   }
@@ -538,18 +669,12 @@ export class EventBus {
   ): void {
     if (!this.options.captureRejections) return;
 
-    const handler = (
-      this.emitter as unknown as {
-        [captureRejectionSymbol]?: (...args: any[]) => void;
-      }
-    )[captureRejectionSymbol];
+    const handler = (this.emitter as any)[captureRejectionSymbol];
     if (typeof handler === "function") {
       try {
         handler.call(this.emitter, error, event, ctx, payload, meta);
         return;
-      } catch {
-        // Fall through to error monitor
-      }
+      } catch {}
     }
 
     this.emitErrorMonitor(error, ctx, meta);

@@ -1,6 +1,7 @@
-import { Sinwan } from "./src/sinwan";
+import { Sinwan } from "./dist";
 
 const app = new Sinwan();
+
 
 // Simple JSON response
 app.get("/json", (ctx) => {

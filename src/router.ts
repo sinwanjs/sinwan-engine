@@ -8,6 +8,7 @@
 import type { Context } from "./context";
 import type { Plugin } from "./types";
 import type { Runtime } from "./runtime";
+import path from "node:path";
 
 export type RouteHandler = (ctx: Context) => Promise<void> | void;
 
@@ -56,8 +57,10 @@ function createRadixNode(prefix: string): RadixNode {
   };
 }
 
-// Frozen empty params object for static routes — zero allocation.
-const EMPTY_PARAMS: Record<string, string> = Object.freeze(Object.create(null));
+// Helper for zero-prototype empty params object.
+function createEmptyParams(): Record<string, string> {
+  return Object.create(null);
+}
 
 // Fast key-by-key copy — cheaper than spread (avoids iterator protocol).
 function copyParams(src: Record<string, string>): Record<string, string> {
@@ -408,21 +411,55 @@ export class Router implements Plugin {
    * Serve static files from a directory.
    * Only responds if the file exists on disk, allowing fall-through.
    *
+   * Security: Uses path.relative() to detect ALL traversal attempts including
+   * URL-encoded sequences, double encoding, and mixed encoding attacks.
+   *
    * @param prefix The URL prefix (e.g. "/public")
    * @param root   The local directory path (e.g. "./public")
    */
   static(prefix: string, root: string) {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
-    const cleanRoot = root.replace(/\/$/, "");
+    const cleanRoot = path.resolve(root.replace(/\/$/, ""));
 
     this.get(cleanPrefix + "/*", async (ctx) => {
       const subPath = ctx.params["_wildcard"] || "";
+      if (subPath === "") return;
 
-      if (subPath.includes("..")) return;
+      // Security: Decode URL-encoded sequences (handles %2e%2e%2f, etc.)
+      let decodedPath: string;
+      try {
+        // Decode multiple times to catch double/triple encoding attacks
+        decodedPath = subPath;
+        let prev = "";
+        while (prev !== decodedPath) {
+          prev = decodedPath;
+          decodedPath = decodeURIComponent(decodedPath);
+        }
+      } catch {
+        // Invalid encoding - reject
+        return;
+      }
 
-      const filePath = cleanRoot + (subPath || "/index.html");
+      // Security: Reject any path containing traversal sequences
+      // This catches both encoded and decoded ".." attempts
+      if (decodedPath.includes("..") || decodedPath.includes("\0")) {
+        return;
+      }
+
+      // Build the full path
+      const normalizedSubPath = decodedPath.startsWith("/")
+        ? decodedPath.slice(1)
+        : decodedPath;
+      const filePath = path.resolve(cleanRoot, normalizedSubPath);
+
+      // Security: Use path.relative() to detect if the resolved path escapes root
+      // If the relative path starts with "..", it's outside the allowed directory
+      const relativePath = path.relative(cleanRoot, filePath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return;
+      }
+
       const file = Bun.file(filePath);
-
       if (await file.exists()) {
         ctx.file(filePath);
       }
@@ -531,7 +568,7 @@ export class Router implements Plugin {
           type: "match",
           source: "specific",
           handlers: staticBucket,
-          params: EMPTY_PARAMS,
+          params: createEmptyParams(),
         };
       }
 
@@ -562,7 +599,7 @@ export class Router implements Plugin {
             type: "match",
             source: "specific",
             handlers: getStatic,
-            params: EMPTY_PARAMS,
+            params: createEmptyParams(),
           };
         }
 
@@ -594,7 +631,7 @@ export class Router implements Plugin {
         type: "match",
         source: "all",
         handlers: allStatic,
-        params: EMPTY_PARAMS,
+        params: createEmptyParams(),
       };
     }
 
@@ -630,7 +667,7 @@ export class Router implements Plugin {
   ): { handlers: RouteHandler[]; params: Record<string, string> } | null {
     const allStatic = this.staticAll.get(pathname);
     if (allStatic) {
-      return { handlers: allStatic, params: EMPTY_PARAMS };
+      return { handlers: allStatic, params: createEmptyParams() };
     }
 
     const params: Record<string, string> = Object.create(null);

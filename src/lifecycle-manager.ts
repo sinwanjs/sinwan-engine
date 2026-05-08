@@ -9,11 +9,17 @@ import type { Context } from "./context";
  */
 export class LifecycleManager {
   private state: LifecycleState = LifecycleState.IDLE;
+  private readonly lifecycleCtx: any;
 
   constructor(
     private readonly bus: EventBus,
-    private readonly ctx: Context,
-  ) { }
+  ) {
+    this.lifecycleCtx = {
+      requestId: "lifecycle",
+      isStopped: () => false,
+      recordEvent: () => {},
+    };
+  }
 
   /**
    * Transition to INIT phase.
@@ -21,7 +27,7 @@ export class LifecycleManager {
    */
   async init(payload?: any): Promise<void> {
     this.transitionTo(LifecycleState.INIT, [LifecycleState.IDLE]);
-    await this.bus.emitAsync("app:init", this.ctx, payload, { source: "app" });
+    await this.bus.emitAsync("app:init", this.lifecycleCtx, payload, { source: "app" });
   }
 
   /**
@@ -30,7 +36,7 @@ export class LifecycleManager {
    */
   async ready(payload?: any): Promise<void> {
     this.transitionTo(LifecycleState.READY, [LifecycleState.INIT]);
-    await this.bus.emitAsync("app:ready", this.ctx, payload, { source: "app" });
+    await this.bus.emitAsync("app:ready", this.lifecycleCtx, payload, { source: "app" });
   }
 
   /**
@@ -39,7 +45,7 @@ export class LifecycleManager {
    */
   async shutdown(payload?: any): Promise<void> {
     this.transitionTo(LifecycleState.SHUTDOWN, [LifecycleState.READY, LifecycleState.INIT]);
-    await this.bus.emitAsync("app:shutdown", this.ctx, payload, { source: "app" });
+    await this.bus.emitAsync("app:shutdown", this.lifecycleCtx, payload, { source: "app" });
   }
 
   /**
@@ -48,7 +54,7 @@ export class LifecycleManager {
    */
   async destroy(payload?: any): Promise<void> {
     this.transitionTo(LifecycleState.DESTROYED, [LifecycleState.SHUTDOWN]);
-    await this.bus.emitAsync("app:destroy", this.ctx, payload, { source: "app" });
+    await this.bus.emitAsync("app:destroy", this.lifecycleCtx, payload, { source: "app" });
   }
 
   /**
