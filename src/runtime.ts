@@ -168,7 +168,7 @@ export class Runtime {
     await this.errorHandler.handle(error, ctx);
   }
 
-  private acquireContext(server?: Server<any>): Context {
+  acquireContext(server?: Server<any>): Context {
     const ctx = this.contextPool.pop();
     if (ctx) {
       ctx.reset({
@@ -185,7 +185,7 @@ export class Runtime {
     });
   }
 
-  private releaseContext(ctx: Context): void {
+  releaseContext(ctx: Context): void {
     if (this.contextPool.length < this.maxPoolSize) {
       this.contextPool.push(ctx);
     }

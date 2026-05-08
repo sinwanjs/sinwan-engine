@@ -1,4 +1,4 @@
-import { Sinwan } from "./dist";
+import { Sinwan } from "./src";
 
 const app = new Sinwan();
 

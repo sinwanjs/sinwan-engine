@@ -12,7 +12,7 @@
  *  - Context can interact with the EventBus when attached.
  */
 
-import type { CookieMap, Server } from "bun";
+import type { CookieMap, Server, ServerWebSocket, Socket } from "bun";
 import type { EventBus } from "./event-bus";
 import type {
   ContextOptions,
@@ -40,7 +40,17 @@ class HttpError extends Error {
   }
 }
 
-export class Context {
+export interface WSSData {
+  path: string;
+  data: unknown;
+}
+
+export interface TCPData {
+  name: string;
+  data: unknown;
+}
+
+export class Context<T = unknown> {
   /** The incoming Bun/Web API Request. */
   public req: Request;
 
@@ -48,7 +58,11 @@ export class Context {
    * The Bun Server instance (if provided).
    * Guards added in clientIP / setTimeout before access.
    */
-  public readonly server: Server<any> | undefined;
+  public server: Server<any> | undefined;
+
+  public ws?: ServerWebSocket<WSSData>;
+
+  public tcp?: Socket<TCPData>;
 
   /** HTTP status code for the response. */
   public statusCode: number = 200;
@@ -157,6 +171,9 @@ export class Context {
    */
   reset(options: ContextOptions = {}): void {
     this.req = undefined as unknown as Request;
+    this.server = options.server;
+    this.ws = undefined;
+    this.tcp = undefined;
     this.statusCode = 200;
     this.body = null;
     this.params = {};
@@ -189,6 +206,14 @@ export class Context {
    */
   setReq(req: Request): void {
     this.req = req;
+  }
+
+  setWS(ws: ServerWebSocket<WSSData>): void {
+    this.ws = ws;
+  }
+
+  setTCP(tcp: Socket<TCPData>): void {
+    this.tcp = tcp;
   }
 
   // ─── State Management ───────────────────────────────────
@@ -249,6 +274,12 @@ export class Context {
   text(data: string, status?: number): void {
     this.guardDoubleResponse();
     this.commitResponse("text", data, status, "text/plain");
+  }
+
+  redirect(location: string, status: number = 302): void {
+    this.guardDoubleResponse();
+    this.headers.set("Location", location);
+    this.commitResponse("redirect", null, status);
   }
 
   /**
@@ -432,6 +463,110 @@ export class Context {
    */
   setTimeout(seconds: number): void {
     this.server?.timeout(this.req, seconds);
+  }
+
+  get pendingWebSockets(): number {
+    return this.getServer().pendingWebSockets;
+  }
+
+  publishToTopic(
+    topic: string,
+    data: Parameters<Server<any>["publish"]>[1],
+    compress?: boolean,
+  ): number {
+    return this.getServer().publish(topic, data, compress);
+  }
+
+  get data(): T {
+    return this.getWebSocket().data.data as T;
+  }
+
+  get path(): string {
+    return this.getWebSocket().data.path;
+  }
+
+  get remoteAddress(): string {
+    return this.getWebSocket().remoteAddress;
+  }
+
+  get readyState(): number {
+    return this.getWebSocket().readyState;
+  }
+
+  get subscriptions(): string[] {
+    return this.getWebSocket().subscriptions;
+  }
+
+  send(message: string | ArrayBuffer | Uint8Array, compress?: boolean): number {
+    return this.getWebSocket().send(message, compress);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.getWebSocket().close(code, reason);
+  }
+
+  subscribe(topic: string): void {
+    this.getWebSocket().subscribe(topic);
+  }
+
+  unsubscribe(topic: string): void {
+    this.getWebSocket().unsubscribe(topic);
+  }
+
+  publish(
+    topic: string,
+    message: string | ArrayBuffer | Uint8Array,
+    compress?: boolean,
+  ): number {
+    return this.getWebSocket().publish(topic, message, compress);
+  }
+
+  isSubscribed(topic: string): boolean {
+    return this.getWebSocket().isSubscribed(topic);
+  }
+
+  cork(cb: (ctx: Context<T>) => void): void {
+    this.getWebSocket().cork(() => cb(this));
+  }
+
+  get tcpData(): T {
+    return this.getTCPSocket().data.data as T;
+  }
+
+  get tcpName(): string {
+    return this.getTCPSocket().data.name;
+  }
+
+  get tcpRemoteAddress(): string {
+    return this.getTCPSocket().remoteAddress;
+  }
+
+  get tcpLocalAddress(): string {
+    return this.getTCPSocket().localAddress;
+  }
+
+  write(
+    data: Parameters<Socket<TCPData>["write"]>[0],
+    byteOffset?: number,
+    byteLength?: number,
+  ): number {
+    return this.getTCPSocket().write(data, byteOffset, byteLength);
+  }
+
+  end(
+    data?: Parameters<Socket<TCPData>["write"]>[0],
+    byteOffset?: number,
+    byteLength?: number,
+  ): number {
+    return this.getTCPSocket().end(data, byteOffset, byteLength);
+  }
+
+  flush(): void {
+    this.getTCPSocket().flush();
+  }
+
+  timeout(seconds: number): void {
+    this.getTCPSocket().timeout(seconds);
   }
 
   // ─── Private Internal Methods ───────────────────────────
@@ -639,14 +774,15 @@ export class Context {
       if (contentLength === -1 && this._formData) {
         let totalSize = 0;
         for (const [_, value] of this._formData.entries()) {
+          const entry = value as unknown;
           // Check if value is a File-like object (has size property)
           if (
-            value &&
-            typeof value === "object" &&
-            "size" in value &&
-            typeof (value as any).size === "number"
+            entry != null &&
+            typeof entry === "object" &&
+            "size" in entry &&
+            typeof (entry as any).size === "number"
           ) {
-            totalSize += (value as any).size;
+            totalSize += (entry as any).size;
             if (totalSize > this.maxBodySize) {
               this._formData = undefined;
               throw new HttpError(
@@ -994,6 +1130,27 @@ export class Context {
       throw new Error("Context is not attached to an EventBus.");
     }
     return this._bus;
+  }
+
+  private getServer(): Server<any> {
+    if (!this.server) {
+      throw new Error("Context is not attached to a Server.");
+    }
+    return this.server;
+  }
+
+  private getWebSocket(): ServerWebSocket<WSSData> {
+    if (!this.ws) {
+      throw new Error("Context is not attached to a WebSocket.");
+    }
+    return this.ws;
+  }
+
+  private getTCPSocket(): Socket<TCPData> {
+    if (!this.tcp) {
+      throw new Error("Context is not attached to a TCP socket.");
+    }
+    return this.tcp;
   }
 
   private withSource(options?: EmitOptions): EmitOptions {

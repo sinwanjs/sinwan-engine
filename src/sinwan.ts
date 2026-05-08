@@ -3,9 +3,22 @@ import { EventBus } from "./event-bus";
 import { ErrorHandler, type ErrorHook } from "./error-handler";
 import { Runtime } from "./runtime";
 import { Router, type RouteHandler } from "./router";
+import { WSRouter, type WSRouteConfig, type WSOptions } from "./ws-router";
+import {
+  TCPRouter,
+  type TCPClientConfig,
+  type TCPConnectOptions,
+  type TCPListenOptions,
+  type TCPRouteConfig,
+} from "./tcp-router";
 import { LifecycleManager } from "./lifecycle-manager";
 import type { Context } from "./context";
-import type { Server } from "bun";
+import type {
+  Server,
+  Socket,
+  TCPSocketListener,
+  UnixSocketListener,
+} from "bun";
 import type { Request } from "./types";
 
 /**
@@ -28,6 +41,8 @@ export interface AppOptions {
   idleTimeout?: number;
   /** Maximum number of contexts to keep in the pool. Default: 1000 */
   maxPoolSize?: number;
+  /** WebSocket server-level options (compression, limits, etc). */
+  websocket?: WSOptions;
 }
 
 export class Sinwan {
@@ -40,6 +55,12 @@ export class Sinwan {
 
   /** Router: Handles routing for the application.*/
   public readonly router: Router;
+
+  /** WS Router: Handles WebSocket route registration and upgrade dispatch.*/
+  public readonly wsRouter: WSRouter;
+
+  /** TCP Router: Handles TCP route registration and Bun TCP server dispatch.*/
+  public readonly tcpRouter: TCPRouter;
 
   /** Runtime: Handles the runtime for the application.*/
   public readonly runtime: Runtime;
@@ -59,6 +80,9 @@ export class Sinwan {
 
   /** Server: Manages the server for the application.*/
   private server?: Server<any>;
+
+  private tcpServers: Array<TCPSocketListener<any> | UnixSocketListener<any>> =
+    [];
 
   /**
    * Create a new SinwanJS application.
@@ -87,6 +111,12 @@ export class Sinwan {
     this.lifecycle = new LifecycleManager(this.bus);
 
     this.runtime.use(this.router);
+
+    this.wsRouter = new WSRouter();
+    if (options.websocket) {
+      this.wsRouter.setOptions(options.websocket);
+    }
+    this.tcpRouter = new TCPRouter();
   }
 
   /**
@@ -166,6 +196,29 @@ export class Sinwan {
   }
 
   /**
+   * Register a WebSocket route.
+   * @param path The URL path to match for the upgrade request.
+   * @param config Lifecycle hooks: upgrade, open, message, close, drain, error.
+   *
+   * @example
+   * app.ws<{ userId: string }>('/chat', {
+   *   upgrade(ctx) {
+   *     ctx.set('ws:data', { userId: ctx.req.headers.get('x-user-id') });
+   *   },
+   *   open(ws) { ws.subscribe('room:1'); },
+   *   message(ws, msg) { ws.publish('room:1', msg); },
+   *   close(ws) { ws.unsubscribe('room:1'); },
+   * });
+   */
+  ws<T = unknown>(path: string, config: WSRouteConfig<T>): void {
+    this.wsRouter.ws(path, config);
+  }
+
+  tcp<T = unknown>(name: string, config: TCPRouteConfig<T>): void {
+    this.tcpRouter.tcp(name, config);
+  }
+
+  /**
    * Register a route handler for all HTTP methods.
    * @param handlers The route handlers to register.
    */
@@ -189,6 +242,23 @@ export class Sinwan {
    */
   static(prefix: string, root: string) {
     this.router.static(prefix, root);
+  }
+
+  listenTCP<T = unknown>(
+    name: string,
+    options: TCPListenOptions<T>,
+  ): TCPSocketListener<any> | UnixSocketListener<any> {
+    const server = this.tcpRouter.listen(this.runtime, name, options);
+    this.tcpServers.push(server);
+    return server;
+  }
+
+  connectTCP<T = unknown>(
+    name: string,
+    options: TCPConnectOptions<T>,
+    config: TCPClientConfig<T>,
+  ): Promise<Socket<any>> {
+    return this.tcpRouter.connect(this.runtime, name, options, config);
   }
 
   /**
@@ -215,12 +285,25 @@ export class Sinwan {
       }
     }
 
+    // Install ws-upgrade step only when WS routes exist (zero cost otherwise)
+    if (this.wsRouter.hasRoutes()) {
+      this.runtime.use(this.wsRouter);
+    }
+
     try {
-      this.server = Bun.serve({
-        port,
-        idleTimeout: this.config.idleTimeout,
-        fetch: (req, server) => this.runtime.fetch(req as Request, server),
-      });
+      const wsHandlers = this.wsRouter.buildWebSocketHandlers(this.runtime);
+      this.server = wsHandlers
+        ? Bun.serve({
+            port,
+            idleTimeout: this.config.idleTimeout,
+            fetch: (req, server) => this.runtime.fetch(req as Request, server),
+            websocket: wsHandlers,
+          })
+        : Bun.serve({
+            port,
+            idleTimeout: this.config.idleTimeout,
+            fetch: (req, server) => this.runtime.fetch(req as Request, server),
+          });
     } catch (error) {
       throw new Error(
         `Failed to start server on port ${port}: ${error instanceof Error ? error.message : String(error)}`,
@@ -263,6 +346,8 @@ export class Sinwan {
     await this.lifecycle.shutdown();
 
     this.server.stop(closeConn);
+    this.tcpRouter.stop(closeConn);
+    this.tcpServers.length = 0;
 
     await this.lifecycle.destroy();
 

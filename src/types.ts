@@ -156,6 +156,7 @@ export interface SaveFileOptions {
 export type ResponseKind =
   | "json"
   | "text"
+  | "redirect"
   | "stream"
   | "sse"
   | "file"
@@ -180,7 +181,15 @@ export interface InternalEventPayloads {
   };
   "step:error": { name: string; error: unknown };
   "response:set": {
-    kind: "json" | "text" | "stream" | "buffer" | "sse" | "file" | "iterator";
+    kind:
+      | "json"
+      | "text"
+      | "redirect"
+      | "stream"
+      | "buffer"
+      | "sse"
+      | "file"
+      | "iterator";
     statusCode: number;
     contentType: string;
   };
@@ -193,6 +202,21 @@ export interface InternalEventPayloads {
   "app:ready": { port: number | string; server: any };
   "app:shutdown": undefined;
   "app:destroy": undefined;
+  "ws:open": { path: string };
+  "ws:message": { path: string; message: string | ArrayBuffer | Uint8Array };
+  "ws:close": { path: string; code: number; reason: string };
+  "ws:error": { path: string; error: Error };
+  "ws:drain": { path: string };
+  "ws:ping": { path: string; data: Buffer };
+  "ws:pong": { path: string; data: Buffer };
+  "tcp:open": { name: string };
+  "tcp:data": { name: string; data: Buffer };
+  "tcp:close": { name: string; error?: Error };
+  "tcp:drain": { name: string };
+  "tcp:error": { name: string; error: Error };
+  "tcp:connectError": { name: string; error: Error };
+  "tcp:end": { name: string };
+  "tcp:timeout": { name: string };
 }
 
 export type InternalEventMap = {

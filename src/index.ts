@@ -7,6 +7,7 @@
 // ─── Classes ──────────────────────────────────────────────
 
 export { Context } from "./context";
+export type { TCPData, WSSData } from "./context";
 export { StepEngine } from "./step-engine";
 export { EventBus } from "./event-bus";
 export { ErrorHandler } from "./error-handler";
@@ -18,6 +19,31 @@ export { Sinwan, type AppOptions } from "./sinwan";
 export { buildResponse } from "./response";
 
 export { Router } from "./router";
+
+export { WSRouter } from "./ws-router";
+export type {
+  WSRouteConfig,
+  WSOptions,
+  Compressor,
+  WSUpgradeHandler,
+  WSHook,
+  WSMessageHook,
+  WSCloseHook,
+  WSErrorHook,
+  WSPingPongHook,
+} from "./ws-router";
+
+export { TCPRouter } from "./tcp-router";
+export type {
+  TCPClientConfig,
+  TCPConnectOptions,
+  TCPCloseHook,
+  TCPDataHook,
+  TCPErrorHook,
+  TCPHook,
+  TCPListenOptions,
+  TCPRouteConfig,
+} from "./tcp-router";
 
 export { captureRejectionSymbol, errorMonitor } from "node:events";
 
