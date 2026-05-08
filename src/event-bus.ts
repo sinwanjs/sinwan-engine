@@ -31,6 +31,12 @@ export class EventBus {
   > &
     EventBusOptions;
   private sequence: number = 0;
+  private readonly dispatchCache: Map<string, string[]> = new Map();
+  private readonly hasListenersCache: Map<
+    string,
+    { value: boolean; version: number }
+  > = new Map();
+  private hasListenersCacheVersion: number = 0;
 
   constructor(options: EventBusOptions = {}) {
     this.options = {
@@ -50,10 +56,9 @@ export class EventBus {
 
   // ─── Listener Management (Node-style) ────────────────────
 
-  on<E extends string>(event: E, handler: EventHandler<E>, options?: ListenerOptions): this;
-  on(
-    event: symbol,
-    handler: (...args: any[]) => void,
+  on<E extends string>(
+    event: E,
+    handler: EventHandler<E>,
     options?: ListenerOptions,
   ): this;
   on(
@@ -65,6 +70,7 @@ export class EventBus {
 
     this.emitter.on(event, handler);
     this.attachAbort(event, handler, options, false);
+    this.invalidateCaches();
     return this;
   }
 
@@ -87,10 +93,15 @@ export class EventBus {
 
     this.emitter.on(event, handler);
     this.attachAbort(event, handler, options, false);
+    this.invalidateCaches();
     return this;
   }
 
-  once<E extends string>(event: E, handler: EventHandler<E>, options?: ListenerOptions): this;
+  once<E extends string>(
+    event: E,
+    handler: EventHandler<E>,
+    options?: ListenerOptions,
+  ): this;
   once(
     event: symbol,
     handler: (...args: any[]) => void,
@@ -105,6 +116,7 @@ export class EventBus {
 
     this.emitter.once(event, handler);
     this.attachAbort(event, handler, options, true);
+    this.invalidateCaches();
     return this;
   }
 
@@ -127,6 +139,7 @@ export class EventBus {
 
     this.emitter.prependListener(event, handler);
     this.attachAbort(event, handler, options, false);
+    this.invalidateCaches();
     return this;
   }
 
@@ -149,11 +162,13 @@ export class EventBus {
 
     this.emitter.prependOnceListener(event, handler);
     this.attachAbort(event, handler, options, true);
+    this.invalidateCaches();
     return this;
   }
 
   off(event: string | symbol, handler: (...args: any[]) => void): this {
     this.emitter.off(event, handler);
+    this.invalidateCaches();
     return this;
   }
 
@@ -162,11 +177,13 @@ export class EventBus {
     handler: (...args: any[]) => void,
   ): this {
     this.emitter.removeListener(event, handler);
+    this.invalidateCaches();
     return this;
   }
 
   removeAllListeners(event?: string | symbol): this {
     this.emitter.removeAllListeners(event);
+    this.invalidateCaches();
     return this;
   }
 
@@ -189,6 +206,49 @@ export class EventBus {
 
   getMaxListeners(): number {
     return this.emitter.getMaxListeners();
+  }
+
+  private invalidateCaches(): void {
+    this.hasListenersCacheVersion += 1;
+  }
+
+  // ─── Fast-Path Check ───────────────────────────────────
+
+  /**
+   * Fast check: returns true only when at least one listener would fire
+   * for this event (including wildcard matches). Does NOT allocate.
+   * Use this to skip emitAsync/emitSync entirely on the hot path.
+   */
+  hasListeners(event: string): boolean {
+    const cached = this.hasListenersCache.get(event);
+    if (cached && cached.version === this.hasListenersCacheVersion) {
+      return cached.value;
+    }
+
+    const result = this.computeHasListeners(event);
+    this.hasListenersCache.set(event, {
+      value: result,
+      version: this.hasListenersCacheVersion,
+    });
+    return result;
+  }
+
+  private computeHasListeners(event: string): boolean {
+    if (this.emitter.listenerCount(event) > 0) return true;
+    if (!this.options.enableWildcards) return false;
+    // Check the global wildcard
+    if (this.emitter.listenerCount("*") > 0) return true;
+    // Check namespace wildcards (e.g. "request:*" for "request:start")
+    const delimiter = this.options.wildcardDelimiter;
+    if (!delimiter) return false;
+
+    let idx = event.lastIndexOf(delimiter);
+    while (idx > 0) {
+      const wildcard = event.slice(0, idx) + delimiter + "*";
+      if (this.emitter.listenerCount(wildcard) > 0) return true;
+      idx = event.lastIndexOf(delimiter, idx - 1);
+    }
+    return false;
   }
 
   // ─── Emission ───────────────────────────────────────────
@@ -322,8 +382,8 @@ export class EventBus {
           ) {
             console.warn(
               `[EventBus] emitSync: handler for "${dispatchEvent}" returned a Promise. ` +
-              `Async handlers must be registered with emitAsync(). ` +
-              `STOP signals from this handler will be ignored.`,
+                `Async handlers must be registered with emitAsync(). ` +
+                `STOP signals from this handler will be ignored.`,
             );
           }
 
@@ -347,21 +407,33 @@ export class EventBus {
     ctx: Context,
     options?: EmitOptions,
   ): EventMeta {
-    return {
+    const meta = {
       name,
       event,
-      timestamp: options?.timestamp ?? Date.now(),
+      timestamp: options?.timestamp || Date.now(),
       sequence: ++this.sequence,
-      requestId: options?.requestId ?? ctx.requestId,
+      requestId: options?.requestId || ctx.requestId,
       source: options?.source,
     };
+    return meta;
   }
 
   private getDispatchEvents(event: string): string[] {
+    // Cache dispatch event lists — the wildcard expansion for a given
+    // event name never changes, so compute once and reuse.
+    let cached = this.dispatchCache.get(event);
+    if (cached) return cached;
+
     const events: string[] = [event];
 
-    if (!this.options.enableWildcards) return events;
-    if (event.includes("*")) return events;
+    if (!this.options.enableWildcards) {
+      this.dispatchCache.set(event, events);
+      return events;
+    }
+    if (event.includes("*")) {
+      this.dispatchCache.set(event, events);
+      return events;
+    }
 
     const delimiter = this.options.wildcardDelimiter;
     if (delimiter && event.includes(delimiter)) {
@@ -374,6 +446,7 @@ export class EventBus {
     }
 
     if (!events.includes("*")) events.push("*");
+    this.dispatchCache.set(event, events);
     return events;
   }
 

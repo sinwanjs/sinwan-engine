@@ -42,7 +42,7 @@ interface RadixNode {
   isParam: boolean;
   paramName: string;
   isWildcard: boolean;
-  handlers: Partial<Record<HttpMethod, RouteHandler[][]>>;
+  handlers: Partial<Record<HttpMethod, RouteHandler[]>>;
 }
 
 function createRadixNode(prefix: string): RadixNode {
@@ -56,23 +56,33 @@ function createRadixNode(prefix: string): RadixNode {
   };
 }
 
+// Frozen empty params object for static routes — zero allocation.
+const EMPTY_PARAMS: Record<string, string> = Object.freeze(Object.create(null));
+
+// Fast key-by-key copy — cheaper than spread (avoids iterator protocol).
+function copyParams(src: Record<string, string>): Record<string, string> {
+  const dst: Record<string, string> = Object.create(null);
+  for (const key in src) dst[key] = src[key]!;
+  return dst;
+}
+
 function addHandlers(
   node: RadixNode,
   method: HttpMethod,
   handlers: RouteHandler[],
 ): void {
-  const bucket = node.handlers[method];
-  if (bucket) {
-    bucket.push(handlers);
+  const current = node.handlers[method];
+  if (current) {
+    node.handlers[method] = [...current, ...handlers];
   } else {
-    node.handlers[method] = [handlers];
+    node.handlers[method] = handlers;
   }
 }
 
 function getHandlers(
   node: RadixNode,
   method: HttpMethod,
-): RouteHandler[][] | null {
+): RouteHandler[] | null {
   return node.handlers[method] ?? null;
 }
 
@@ -96,13 +106,18 @@ function splitPath(path: string): string[] {
   return path.split("/").filter(Boolean);
 }
 
-// Manual URL parser: only extract pathname and normalize trailing slash.
-function parsePathname(url: string): string {
+const PATH_INDICES = { start: 0, end: 0 };
+
+function setPathnameIndices(url: string): void {
   let start = 0;
   const protoIdx = url.indexOf("://");
   if (protoIdx !== -1) {
     start = url.indexOf("/", protoIdx + 3);
-    if (start === -1) return "/";
+    if (start === -1) {
+      PATH_INDICES.start = 0;
+      PATH_INDICES.end = 0;
+      return;
+    }
   }
 
   let end = url.length;
@@ -114,12 +129,24 @@ function parsePathname(url: string): string {
     }
   }
 
-  let pathname = url.slice(start, end) || "/";
-  if (pathname.length > 1 && pathname.charCodeAt(pathname.length - 1) === 47) {
-    pathname = pathname.slice(0, -1);
+  if (end - start > 1 && url.charCodeAt(end - 1) === 47) {
+    end -= 1;
   }
 
-  return pathname;
+  PATH_INDICES.start = start;
+  PATH_INDICES.end = end;
+}
+
+function segmentPathRaw(url: string, start: number, end: number): number {
+  segCount = 0;
+  let s = url.charCodeAt(start) === 47 ? start + 1 : start;
+  for (let i = s; i <= end; i += 1) {
+    if (i === end || url.charCodeAt(i) === 47) {
+      if (i > s) SEG_BUFFER[segCount++] = url.slice(s, i);
+      s = i + 1;
+    }
+  }
+  return segCount;
 }
 
 // Pre-allocated segment buffer for request paths
@@ -223,7 +250,7 @@ function radixSearch(
   depth: number,
   method: HttpMethod,
   params: Record<string, string>,
-): RouteHandler[][] | null {
+): RouteHandler[] | null {
   if (depth === segCount) {
     const direct = getHandlers(node, method);
     if (direct) return direct;
@@ -326,7 +353,7 @@ export class Router implements Plugin {
 
   private readonly staticRoutes: Record<
     SpecificMethod,
-    Map<string, RouteHandler[][]>
+    Map<string, RouteHandler[]>
   > = {
     GET: new Map(),
     POST: new Map(),
@@ -337,7 +364,7 @@ export class Router implements Plugin {
     HEAD: new Map(),
   };
 
-  private readonly staticAll: Map<string, RouteHandler[][]> = new Map();
+  private readonly staticAll: Map<string, RouteHandler[]> = new Map();
 
   private readonly radix: Record<SpecificMethod, RadixNode> = {
     GET: createRadixNode(""),
@@ -429,57 +456,70 @@ export class Router implements Plugin {
     this.add("ALL", path, handlers);
   }
 
-  private add(method: HttpMethod, path: string, routeHandlers: RouteHandler[]) {
+  private add(method: HttpMethod, path: string, handlers: RouteHandler[]) {
     const normalized = normalizePath(path);
-    const handlers = [...this.middlewares, ...routeHandlers];
+    const finalHandlers = [...this.middlewares, ...handlers];
 
-    this.routes.push({ method, path: normalized, handlers });
+    this.routes.push({ method, path: normalized, handlers: finalHandlers });
 
     const hasParamsOrWildcard =
       normalized.includes(":") || normalized.includes("*");
 
     if (method === "ALL") {
       if (!hasParamsOrWildcard) {
-        const bucket = this.staticAll.get(normalized);
-        if (bucket) bucket.push(handlers);
-        else this.staticAll.set(normalized, [handlers]);
+        const current = this.staticAll.get(normalized);
+        if (current)
+          this.staticAll.set(normalized, [...current, ...finalHandlers]);
+        else this.staticAll.set(normalized, finalHandlers);
       } else {
         const segments = splitPath(normalized);
-        radixInsert(this.radixAll, segments, 0, "ALL", handlers);
+        radixInsert(this.radixAll, segments, 0, "ALL", finalHandlers);
       }
       return;
     }
 
     if (!hasParamsOrWildcard) {
-      const bucket = this.staticRoutes[method].get(normalized);
-      if (bucket) bucket.push(handlers);
-      else this.staticRoutes[method].set(normalized, [handlers]);
+      const current = this.staticRoutes[method].get(normalized);
+      if (current)
+        this.staticRoutes[method].set(normalized, [
+          ...current,
+          ...finalHandlers,
+        ]);
+      else this.staticRoutes[method].set(normalized, finalHandlers);
       return;
     }
 
     const segments = splitPath(normalized);
-    radixInsert(this.radix[method], segments, 0, method, handlers);
+    radixInsert(this.radix[method], segments, 0, method, finalHandlers);
   }
 
   // ─── Resolution ───────────────────────────────────────────
 
-  private resolve(
+  public resolve(
     method: string,
-    pathname: string,
+    url: string,
+    start: number,
+    end: number,
   ):
     | {
         type: "match";
         source: "specific" | "all";
-        handlers: RouteHandler[][];
+        handlers: RouteHandler[];
         params: Record<string, string>;
       }
     | { type: "method-not-allowed" }
     | null {
     const m = isSpecificMethod(method) ? method : undefined;
+
+    // Attempt static lookup first without slicing if possible
+    // Wait, Maps need the string key. So we still need ONE slice if we use Maps.
+    // BUT we can use a trie for everything or a specialized cache.
+    const pathname = url.slice(start, end) || "/";
+
     let segCount = -1;
     const segs = SEG_BUFFER;
     const ensureSegments = () => {
-      if (segCount === -1) segCount = segmentPath(pathname);
+      if (segCount === -1) segCount = segmentPathRaw(url, start, end);
       return segCount;
     };
 
@@ -491,7 +531,7 @@ export class Router implements Plugin {
           type: "match",
           source: "specific",
           handlers: staticBucket,
-          params: {},
+          params: EMPTY_PARAMS,
         };
       }
 
@@ -510,7 +550,7 @@ export class Router implements Plugin {
           type: "match",
           source: "specific",
           handlers: handlerBucket,
-          params: { ...params },
+          params: copyParams(params),
         };
       }
 
@@ -522,7 +562,7 @@ export class Router implements Plugin {
             type: "match",
             source: "specific",
             handlers: getStatic,
-            params: {},
+            params: EMPTY_PARAMS,
           };
         }
 
@@ -541,7 +581,7 @@ export class Router implements Plugin {
             type: "match",
             source: "specific",
             handlers: getBucket,
-            params: { ...params },
+            params: copyParams(params),
           };
         }
       }
@@ -550,7 +590,12 @@ export class Router implements Plugin {
     // 3) ALL bucket fallback
     const allStatic = this.staticAll.get(pathname);
     if (allStatic) {
-      return { type: "match", source: "all", handlers: allStatic, params: {} };
+      return {
+        type: "match",
+        source: "all",
+        handlers: allStatic,
+        params: EMPTY_PARAMS,
+      };
     }
 
     const params: Record<string, string> = Object.create(null);
@@ -561,7 +606,7 @@ export class Router implements Plugin {
         type: "match",
         source: "all",
         handlers: allBucket,
-        params: { ...params },
+        params: copyParams(params),
       };
     }
 
@@ -582,10 +627,10 @@ export class Router implements Plugin {
 
   private resolveAll(
     pathname: string,
-  ): { handlers: RouteHandler[][]; params: Record<string, string> } | null {
+  ): { handlers: RouteHandler[]; params: Record<string, string> } | null {
     const allStatic = this.staticAll.get(pathname);
     if (allStatic) {
-      return { handlers: allStatic, params: {} };
+      return { handlers: allStatic, params: EMPTY_PARAMS };
     }
 
     const params: Record<string, string> = Object.create(null);
@@ -599,20 +644,63 @@ export class Router implements Plugin {
       params,
     );
     if (allBucket) {
-      return { handlers: allBucket, params: { ...params } };
+      return { handlers: allBucket, params: copyParams(params) };
     }
 
     return null;
   }
 
+  // ─── Static handler chain runner ─────────────────────────
+
+  private static runChain(
+    ctx: Context,
+    chain: RouteHandler[],
+    onError?: (error: unknown) => Promise<void> | void,
+  ): void | Promise<void> {
+    const len = chain.length;
+    for (let i = 0; i < len; i += 1) {
+      const handler = chain[i];
+      if (!handler) continue;
+      const result = handler(ctx);
+      if (result instanceof Promise) {
+        return (async () => {
+          try {
+            await result;
+            if (ctx.hasResponded() || ctx.isStopped()) return;
+            for (let j = i + 1; j < len; j += 1) {
+              const h = chain[j];
+              if (h) await h(ctx);
+              if (ctx.hasResponded() || ctx.isStopped()) return;
+            }
+          } catch (error) {
+            if (onError) {
+              await onError(error);
+              return;
+            }
+            throw error;
+          }
+        })();
+      }
+
+      if (ctx.hasResponded() || ctx.isStopped()) return;
+    }
+  }
+
   // ─── Plugin Installation ──────────────────────────────────
 
   install(app: Runtime): void {
+    // Capture `this` for use inside the step closure
+    const router = this;
+
     app.engine.add({
       name: "router",
-      run: async (ctx: Context) => {
-        const pathname = parsePathname(ctx.req.url);
-        const match = this.resolve(ctx.req.method, pathname);
+      run: (ctx: Context) => {
+        const url = ctx.req.url;
+        setPathnameIndices(url);
+        const start = PATH_INDICES.start;
+        const end = PATH_INDICES.end;
+        const pathname = url.slice(start, end) || "/";
+        const match = router.resolve(ctx.req.method, url, start, end);
 
         if (!match) return;
 
@@ -621,41 +709,34 @@ export class Router implements Plugin {
           return;
         }
 
-        const runChains = async (chains: RouteHandler[][]) => {
-          for (
-            let chainIndex = 0;
-            chainIndex < chains.length;
-            chainIndex += 1
-          ) {
-            const chain = chains[chainIndex];
-            if (!chain) continue;
-
-            for (
-              let handlerIndex = 0;
-              handlerIndex < chain.length;
-              handlerIndex += 1
-            ) {
-              const handler = chain[handlerIndex];
-              if (!handler) continue;
-              await handler(ctx);
-
-              if (ctx.hasResponded() || ctx.isStopped()) return;
-            }
-
-            if (ctx.hasResponded() || ctx.isStopped()) return;
-          }
-        };
+        const handleRouteError = (error: unknown) =>
+          app.errorHandler.handle(error, ctx);
 
         ctx.params = match.params;
-        await runChains(match.handlers);
+        const result = Router.runChain(ctx, match.handlers, handleRouteError);
+
+        if (result instanceof Promise) {
+          return (async () => {
+            await result;
+            if (ctx.hasResponded() || ctx.isStopped()) return;
+            if (match.source === "specific") {
+              const allMatch = router.resolveAll(pathname);
+              if (allMatch) {
+                ctx.params = allMatch.params;
+                await Router.runChain(ctx, allMatch.handlers, handleRouteError);
+              }
+            }
+          })();
+        }
+
         if (ctx.hasResponded() || ctx.isStopped()) return;
 
         if (match.source === "specific") {
-          const allMatch = this.resolveAll(pathname);
+          const allMatch = router.resolveAll(pathname);
           if (!allMatch) return;
 
           ctx.params = allMatch.params;
-          await runChains(allMatch.handlers);
+          return Router.runChain(ctx, allMatch.handlers, handleRouteError);
         }
       },
     });

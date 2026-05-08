@@ -40,7 +40,7 @@ export type StepResult =
  */
 export type Step = {
   readonly name: string;
-  run(ctx: Context, bus: EventBus): Promise<StepResult | void>;
+  run(ctx: Context, bus: EventBus): Promise<StepResult | void> | StepResult | void;
 };
 
 // ─── Event System ───────────────────────────────────────────

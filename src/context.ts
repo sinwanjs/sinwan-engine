@@ -57,10 +57,18 @@ export class Context {
   public body: unknown = null;
 
   /** Response headers. */
-  public readonly headers: Headers = new Headers();
+  private _headers?: Headers;
+  get headers(): Headers {
+    if (!this._headers) this._headers = new Headers();
+    return this._headers;
+  }
 
   /** Arbitrary per-request state for steps/plugins. */
-  public readonly state: Map<string, any> = new Map();
+  private _state?: Map<string, any>;
+  get state(): Map<string, any> {
+    if (!this._state) this._state = new Map();
+    return this._state;
+  }
 
   /** Shared application-level state. */
   public readonly global: Map<string, any>;
@@ -69,31 +77,70 @@ export class Context {
   public params: Record<string, string> = {};
 
   /** Unique ID for this request context. */
-  public requestId: string;
+  private _requestId: string = "";
+  private static _idCounter: number = 0;
+
+  get requestId(): string {
+    if (this._requestId === "") {
+      this._requestId = `req-${++Context._idCounter}`;
+    }
+    return this._requestId;
+  }
+
+  set requestId(value: string) {
+    this._requestId = value;
+  }
 
   // ─── Internal Flags ─────────────────────────────────────
 
-  private _stopped: boolean = false;
-  private _responded: boolean = false;
+  private _status: number = 0;
+  private static readonly STOPPED = 1 << 0;
+  private static readonly RESPONDED = 1 << 1;
+  private static readonly DISPOSED = 1 << 2;
+
   private _parsedBody: unknown = undefined;
   private _formData?: FormData;
   private _bus?: EventBus;
-  private _disposed: boolean = false;
+  /** @internal */
+  public _meta: any = {
+    name: "",
+    event: "",
+    timestamp: 0,
+    sequence: 0,
+    requestId: "",
+    source: undefined,
+  };
 
   private readonly traceOptions: Required<EventTraceOptions>;
-  private readonly eventTrace: EventTraceEntry[] = [];
+  private _eventTrace?: EventTraceEntry[];
+  private _traceStart: number = 0;
+  private _traceSize: number = 0;
+  get eventTrace(): EventTraceEntry[] {
+    const buffer = this.getTraceBuffer();
+    if (this._traceSize === 0) return buffer;
+    if (this._traceStart === 0 && this._traceSize === buffer.length)
+      return buffer;
+
+    const ordered = new Array<EventTraceEntry>(this._traceSize);
+    const len = buffer.length;
+    for (let i = 0; i < this._traceSize; i += 1) {
+      ordered[i] = buffer[(this._traceStart + i) % len]!;
+    }
+    return ordered;
+  }
 
   // Map stores Set<EventHandler> so multiple registrations of the
   // same original handler each get their own tracked wrapped handler entry.
-  private readonly scopedHandlers: Map<
-    string,
-    Map<EventHandler, Set<EventHandler>>
-  > = new Map();
+  private _scopedHandlers?: Map<string, Map<EventHandler, Set<EventHandler>>>;
+  get scopedHandlers(): Map<string, Map<EventHandler, Set<EventHandler>>> {
+    if (!this._scopedHandlers) this._scopedHandlers = new Map();
+    return this._scopedHandlers;
+  }
 
   constructor(options: ContextOptions = {}) {
     this.req = undefined as unknown as Request;
     this.server = options.server;
-    this.requestId = options.requestId ?? this.createRequestId();
+    if (options.requestId) this._requestId = options.requestId;
     this._bus = options.bus;
 
     this.traceOptions = {
@@ -103,6 +150,37 @@ export class Context {
     };
 
     this.global = options.global ?? new Map();
+  }
+
+  /**
+   * Reset the context for reuse in a pool.
+   */
+  reset(options: ContextOptions = {}): void {
+    this.req = undefined as unknown as Request;
+    this.statusCode = 200;
+    this.body = null;
+    this.params = {};
+    this._requestId = options.requestId || "";
+    this._status = 0;
+    this._parsedBody = undefined;
+    this._formData = undefined;
+    this._bus = options.bus;
+
+    // Reset meta
+    this._meta.name = "";
+    this._meta.event = "";
+    this._meta.timestamp = 0;
+    this._meta.sequence = 0;
+    this._meta.requestId = options.requestId || "";
+    this._meta.source = undefined;
+
+    // Fast clear for reused objects
+    if (this._headers) this._headers = undefined;
+    if (this._state) this._state.clear();
+    if (this._eventTrace) this._eventTrace.length = 0;
+    this._traceStart = 0;
+    this._traceSize = 0;
+    if (this._scopedHandlers) this._scopedHandlers.clear();
   }
 
   /**
@@ -154,7 +232,13 @@ export class Context {
    */
   json(data: unknown, status?: number): void {
     this.guardDoubleResponse();
-    this.commitResponse("json", data, status, "application/json");
+    // Pre-serialize JSON so buildResponse() hits the string fast-path
+    this.commitResponse(
+      "json",
+      JSON.stringify(data),
+      status,
+      "application/json",
+    );
   }
 
   /**
@@ -303,7 +387,14 @@ export class Context {
   /** Append or overwrite a single response header. */
   setHeader(key: string, value: string): void {
     this.headers.set(key, value);
-    this.emitSyncIfAvailable("header:set", { key, value });
+    if (this._bus && this._bus.hasListeners("header:set")) {
+      this._bus.emitSync(
+        "header:set",
+        this,
+        { key, value },
+        { source: "context" },
+      );
+    }
   }
 
   // ─── Bun Native Integrations ────────────────────────────
@@ -348,16 +439,23 @@ export class Context {
       this.headers.set("Content-Type", contentType);
     }
 
-    const finalContentType =
-      contentType ?? this.headers.get("Content-Type") ?? "unknown";
+    this._status |= Context.RESPONDED;
 
-    this._responded = true;
-
-    this.emitSyncIfAvailable("response:set", {
-      kind,
-      statusCode: this.statusCode,
-      contentType: finalContentType,
-    });
+    // Hot-path: only build payload and emit when someone is listening
+    if (this._bus && this._bus.hasListeners("response:set")) {
+      const finalContentType =
+        contentType ?? this.headers.get("Content-Type") ?? "unknown";
+      this._bus.emitSync(
+        "response:set",
+        this,
+        {
+          kind,
+          statusCode: this.statusCode,
+          contentType: finalContentType,
+        },
+        { source: "context" },
+      );
+    }
   }
 
   // ─── Utilities ──────────────────────────────────────────
@@ -577,18 +675,22 @@ export class Context {
 
   /** Signal that step execution should halt after the current step. */
   stop(): void {
-    this._stopped = true;
-    this.emitSyncIfAvailable("context:stop");
+    this._status |= Context.STOPPED;
+    if (this._bus && this._bus.hasListeners("context:stop")) {
+      this._bus.emitSync("context:stop", this, undefined, {
+        source: "context",
+      });
+    }
   }
 
   /** Whether stop() has been called. */
   isStopped(): boolean {
-    return this._stopped;
+    return (this._status & Context.STOPPED) !== 0;
   }
 
   /** Whether json() or text() has been called. */
   hasResponded(): boolean {
-    return this._responded;
+    return (this._status & Context.RESPONDED) !== 0;
   }
 
   // ─── EventBus Interaction ──────────────────────────────
@@ -665,12 +767,17 @@ export class Context {
 
   /** Dispose context-scoped listeners. */
   dispose(): void {
-    if (this._disposed) return;
-    this._disposed = true;
+    if ((this._status & Context.DISPOSED) !== 0) return;
+    this._status |= Context.DISPOSED;
 
-    this.emitSyncIfAvailable("context:dispose");
+    if (this._bus && this._bus.hasListeners("context:dispose")) {
+      this._bus.emitSync("context:dispose", this, undefined, {
+        source: "context",
+      });
+    }
 
-    if (!this._bus) return;
+    // Only iterate scoped handlers if any were registered
+    if (!this._bus || this.scopedHandlers.size === 0) return;
     for (const [event, handlerMap] of this.scopedHandlers.entries()) {
       for (const wrappedSet of handlerMap.values()) {
         for (const wrapped of wrappedSet) {
@@ -690,6 +797,9 @@ export class Context {
   recordEvent(meta: EventMeta, payload: unknown): void {
     if (!this.traceOptions.enabled) return;
 
+    const maxEntries = this.traceOptions.maxEntries;
+    if (maxEntries <= 0) return;
+
     const entry: EventTraceEntry = {
       name: meta.name,
       event: meta.event,
@@ -703,20 +813,29 @@ export class Context {
       entry.payload = payload;
     }
 
-    this.eventTrace.push(entry);
-    if (this.eventTrace.length > this.traceOptions.maxEntries) {
-      this.eventTrace.splice(
-        0,
-        this.eventTrace.length - this.traceOptions.maxEntries,
-      );
+    const buffer = this.getTraceBuffer();
+    if (buffer.length < maxEntries) {
+      buffer.push(entry);
+      this._traceSize = buffer.length;
+      return;
     }
+
+    // Ring buffer overwrite to avoid per-request trimming.
+    buffer[this._traceStart] = entry;
+    this._traceStart = (this._traceStart + 1) % maxEntries;
+    this._traceSize = maxEntries;
+  }
+
+  private getTraceBuffer(): EventTraceEntry[] {
+    if (!this._eventTrace) this._eventTrace = [];
+    return this._eventTrace;
   }
 
   // ─── Guards ─────────────────────────────────────────────
 
   /** Throws if a response body has already been committed. */
   private guardDoubleResponse(): void {
-    if (this._responded) {
+    if ((this._status & Context.RESPONDED) !== 0) {
       throw new Error("Response already sent. Cannot set body more than once.");
     }
   }
