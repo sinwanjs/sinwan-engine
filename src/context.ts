@@ -29,6 +29,11 @@ import type {
   SaveFileOptions,
   ResponseKind,
 } from "./types";
+import type { SinwanUDPSocket } from "./udp-router";
+import type { SjsPage } from "./view/types";
+import { registerPage, getPage, renderPage } from "./view/renderer";
+import { streamPage } from "./view/stream";
+import type { HtmlEscapedString } from "./view/jsx/jsx-runtime";
 
 // Proper typed HTTP error class
 class HttpError extends Error {
@@ -50,6 +55,11 @@ export interface TCPData {
   data: unknown;
 }
 
+export interface UDPData {
+  name: string;
+  data: unknown;
+}
+
 export class Context<T = unknown> {
   /** The incoming Bun/Web API Request. */
   public req: Request;
@@ -63,6 +73,8 @@ export class Context<T = unknown> {
   public ws?: ServerWebSocket<WSSData>;
 
   public tcp?: Socket<TCPData>;
+
+  public udp?: SinwanUDPSocket<UDPData>;
 
   /** HTTP status code for the response. */
   public statusCode: number = 200;
@@ -174,6 +186,7 @@ export class Context<T = unknown> {
     this.server = options.server;
     this.ws = undefined;
     this.tcp = undefined;
+    this.udp = undefined;
     this.statusCode = 200;
     this.body = null;
     this.params = {};
@@ -214,6 +227,10 @@ export class Context<T = unknown> {
 
   setTCP(tcp: Socket<TCPData>): void {
     this.tcp = tcp;
+  }
+
+  setUDP(udp: SinwanUDPSocket<UDPData>): void {
+    this.udp = udp;
   }
 
   // ─── State Management ───────────────────────────────────
@@ -274,6 +291,112 @@ export class Context<T = unknown> {
   text(data: string, status?: number): void {
     this.guardDoubleResponse();
     this.commitResponse("text", data, status, "text/plain");
+  }
+
+  /**
+   * Set an HTML response body.
+   * Throws if a response has already been set.
+   */
+  html(
+    htmlString: string | Promise<string> | any,
+    status?: number,
+  ): void | Promise<void> {
+    if (htmlString instanceof Promise) {
+      return htmlString.then((str) => {
+        this.guardDoubleResponse();
+        this.commitResponse("text", str, status, "text/html; charset=UTF-8");
+      });
+    }
+    this.guardDoubleResponse();
+    // Using String() converts our HtmlEscapedString to a raw string
+    this.commitResponse(
+      "text",
+      String(htmlString),
+      status,
+      "text/html; charset=UTF-8",
+    );
+  }
+
+  /**
+   * Set a custom layout/template renderer function for the Context.
+   */
+  setRenderer(
+    renderer: (content: any, head?: any) => void | Promise<void>,
+  ): void;
+  /**
+   * Register an SJS page renderer by name.
+   */
+  setRenderer<D extends object = {}>(name: string, page: SjsPage<D>): void;
+  setRenderer(
+    arg1: string | ((content: any, head?: any) => void | Promise<void>),
+    arg2?: SjsPage<any> | ((content: any, head?: any) => void | Promise<void>),
+  ): void {
+    if (
+      typeof arg1 === "string" &&
+      arg2 &&
+      typeof arg2 === "function" &&
+      "_sjsPage" in arg2
+    ) {
+      // SJS page registration
+      registerPage(arg1, arg2 as SjsPage<any>);
+    } else if (typeof arg1 === "function") {
+      // Legacy renderer function
+      this.set("renderer", arg1);
+    } else if (typeof arg1 === "string" && arg2) {
+      // Also support passing page directly
+      registerPage(arg1, arg2 as SjsPage<any>);
+    }
+  }
+
+  /**
+   * Render content using the configured layout renderer.
+   * If no renderer is set, falls back to rendering as an HTML string.
+   */
+  render(content: any, head?: any): void | Promise<void>;
+  /**
+   * Render a registered SJS page with data.
+   */
+  render<D extends object = {}>(name: string, data: D): Promise<void>;
+  render(arg1: any, arg2?: any): void | Promise<void> {
+    // Check if first arg is a registered page name
+    if (typeof arg1 === "string") {
+      const page = getPage(arg1);
+      if (page) {
+        return this.renderSjsPage(arg1, arg2);
+      }
+    }
+
+    // Legacy render path
+    const renderer =
+      this.get<(content: any, head?: any) => void | Promise<void>>("renderer");
+    if (renderer) {
+      return renderer(arg1, arg2);
+    }
+    return this.html(arg1);
+  }
+
+  /**
+   * Internal: Render an SJS page to HTML response.
+   */
+  private async renderSjsPage<D extends object = {}>(
+    name: string,
+    data: D,
+  ): Promise<void> {
+    const html = await renderPage(name, data);
+    this.html(html);
+  }
+
+  /**
+   * Stream a registered SJS page as HTML response.
+   */
+  streamRender<D extends object = {}>(name: string, data: D): void {
+    const page = getPage<D>(name);
+    if (!page) {
+      throw new Error(`Page "${name}" not found in registry`);
+    }
+
+    const stream = streamPage(page, data);
+    this.stream(stream, 200, "text/html; charset=UTF-8");
   }
 
   redirect(location: string, status: number = 302): void {
@@ -567,6 +690,59 @@ export class Context<T = unknown> {
 
   timeout(seconds: number): void {
     this.getTCPSocket().timeout(seconds);
+  }
+
+  get udpData(): T {
+    return this.getUDPSocket().data.data as T;
+  }
+
+  get udpName(): string {
+    return this.getUDPSocket().data.name;
+  }
+
+  get udpAddress(): import("bun").SocketAddress {
+    return this.getUDPSocket().address;
+  }
+
+  get udpClosed(): boolean {
+    return this.getUDPSocket().closed;
+  }
+
+  sendUDP(
+    data: Parameters<SinwanUDPSocket<any>["send"]>[0],
+    port?: number,
+    address?: string,
+  ): boolean {
+    if (port !== undefined && address !== undefined) {
+      return this.getUDPSocket().send(data, port, address);
+    }
+    return this.getUDPSocket().send(data);
+  }
+
+  sendManyUDP(
+    packets: Parameters<SinwanUDPSocket<any>["sendMany"]>[0],
+  ): number {
+    return this.getUDPSocket().sendMany(packets);
+  }
+
+  addMembershipUDP(
+    multicastAddress: string,
+    interfaceAddress?: string,
+  ): boolean {
+    return this.getUDPSocket().addMembership(
+      multicastAddress,
+      interfaceAddress,
+    );
+  }
+
+  dropMembershipUDP(
+    multicastAddress: string,
+    interfaceAddress?: string,
+  ): boolean {
+    return this.getUDPSocket().dropMembership(
+      multicastAddress,
+      interfaceAddress,
+    );
   }
 
   // ─── Private Internal Methods ───────────────────────────
@@ -1151,6 +1327,13 @@ export class Context<T = unknown> {
       throw new Error("Context is not attached to a TCP socket.");
     }
     return this.tcp;
+  }
+
+  private getUDPSocket(): SinwanUDPSocket<UDPData> {
+    if (!this.udp) {
+      throw new Error("Context is not attached to a UDP socket.");
+    }
+    return this.udp;
   }
 
   private withSource(options?: EmitOptions): EmitOptions {

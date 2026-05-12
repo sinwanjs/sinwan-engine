@@ -7,7 +7,8 @@
     "ex3": "bun --watch src/examples/ex3.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "happy-dom": "^20.9.0"
   },
   "peerDependencies": {
     "typescript": "^5"

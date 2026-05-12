@@ -1,0 +1,217 @@
+import type { SocketAddress } from "bun";
+import type { udp } from "bun";
+import type { Context, UDPData } from "./context";
+import type { Runtime } from "./runtime";
+
+export type UDPHook<T = unknown> = (ctx: Context<T>) => Promise<void> | void;
+
+export type UDPDataHook<T = unknown> = (
+  ctx: Context<T>,
+  data: Buffer,
+  port: number,
+  addr: string,
+) => Promise<void> | void;
+
+export type UDPErrorHook<T = unknown> = (
+  ctx: Context<T>,
+  error: Error,
+) => Promise<void> | void;
+
+export interface UDPRouteConfig<T = unknown> {
+  open?: UDPHook<T>;
+  data?: UDPDataHook<T>;
+  drain?: UDPHook<T>;
+  error?: UDPErrorHook<T>;
+  close?: UDPHook<T>;
+}
+
+export interface UDPListenOptions<T = unknown> {
+  hostname?: string;
+  port?: number;
+  data?: T;
+}
+
+export interface UDPConnectOptions<T = unknown> {
+  hostname: string;
+  port: number;
+  data?: T;
+}
+
+type SinwanUDPData<T = unknown> = Omit<UDPData, "data"> & {
+  data: T | null;
+};
+
+// We intercept Bun's UDPSocket to attach our data
+// But Bun's UDPSocket doesn't have a `.data` property by default.
+// We can use a WeakMap or extend the object runtime, but for simplicity,
+// we will just define it as having data.
+export type SinwanUDPSocket<T = unknown> = udp.BaseUDPSocket & {
+  data: SinwanUDPData<T>;
+  // Allow union of send methods for convenience
+  sendMany(packets: readonly any[]): number;
+  send(data: any, port?: number, address?: string): boolean;
+};
+
+export class UDPRouter {
+  public readonly name = "sinwan:udp-router";
+  private readonly routes = new Map<string, UDPRouteConfig<any>>();
+  private readonly sockets: SinwanUDPSocket<any>[] = [];
+
+  udp<T = unknown>(name: string, config: UDPRouteConfig<T>): void {
+    this.routes.set(name, config);
+  }
+
+  hasRoutes(): boolean {
+    return this.routes.size > 0;
+  }
+
+  async listen<T = unknown>(
+    runtime: Runtime,
+    name: string,
+    options: UDPListenOptions<T>,
+  ): Promise<SinwanUDPSocket<T>> {
+    const config = this.routes.get(name);
+    if (!config) {
+      throw new Error(`UDP route "${name}" is not registered.`);
+    }
+
+    let socketRef: SinwanUDPSocket<T>;
+
+    const socket = await Bun.udpSocket({
+      hostname: options.hostname ?? "0.0.0.0",
+      ...(options.port !== undefined ? { port: options.port } : {}),
+      socket: {
+        data: (s, buf, port, addr) => {
+          this.runUDPHook(
+            runtime,
+            socketRef,
+            "udp:data",
+            { name, data: buf, port, addr },
+            config.data,
+            buf as Buffer,
+            port,
+            addr,
+          );
+        },
+        drain: () => {
+          this.runUDPHook(runtime, socketRef, "udp:drain", { name }, config.drain);
+        },
+        error: (s, error) => {
+          this.runUDPHook(runtime, socketRef, "udp:error", { name, error }, config.error, error);
+        },
+      },
+    });
+
+    socketRef = socket as unknown as SinwanUDPSocket<T>;
+    socketRef.data = { name, data: options.data ?? null };
+    this.sockets.push(socketRef);
+
+    // Manually trigger open hook since Bun UDP doesn't have one
+    this.runUDPHook(runtime, socketRef, "udp:open", { name }, config.open);
+
+    return socketRef;
+  }
+
+  async connect<T = unknown>(
+    runtime: Runtime,
+    name: string,
+    options: UDPConnectOptions<T>,
+  ): Promise<SinwanUDPSocket<T>> {
+    const config = this.routes.get(name);
+    if (!config) {
+      throw new Error(`UDP route "${name}" is not registered.`);
+    }
+
+    let socketRef: SinwanUDPSocket<T>;
+
+    const socket = await Bun.udpSocket({
+      connect: {
+        hostname: options.hostname,
+        port: options.port,
+      },
+      socket: {
+        data: (s, buf, port, addr) => {
+          this.runUDPHook(
+            runtime,
+            socketRef,
+            "udp:data",
+            { name, data: buf, port, addr },
+            config.data,
+            buf as Buffer,
+            port,
+            addr,
+          );
+        },
+        drain: () => {
+          this.runUDPHook(runtime, socketRef, "udp:drain", { name }, config.drain);
+        },
+        error: (s, error) => {
+          this.runUDPHook(runtime, socketRef, "udp:error", { name, error }, config.error, error);
+        },
+      },
+    });
+
+    socketRef = socket as unknown as SinwanUDPSocket<T>;
+    socketRef.data = { name, data: options.data ?? null };
+    this.sockets.push(socketRef);
+
+    this.runUDPHook(runtime, socketRef, "udp:open", { name }, config.open);
+
+    return socketRef;
+  }
+
+  stop(): void {
+    for (let i = 0; i < this.sockets.length; i += 1) {
+      const socket = this.sockets[i];
+      if (socket && !socket.closed) {
+        // Since Bun's udp socket does not emit a close event, 
+        // we can trigger the close hook manually here if desired,
+        // or let the user handle it. We will trigger it here.
+        // But doing so requires access to runtime. 
+        // For now, we just close the socket.
+        socket.close();
+      }
+    }
+    this.sockets.length = 0;
+  }
+
+  private udpHookError(err: unknown): void {
+    console.error("[sinwan:udp] Unhandled hook error:", err);
+  }
+
+  private runUDPHook(
+    runtime: Runtime,
+    socket: SinwanUDPSocket<any>,
+    event: string,
+    payload: unknown,
+    hook?: (ctx: Context<any>, ...args: any[]) => Promise<void> | void,
+    ...args: any[]
+  ): void {
+    if (!hook && !runtime.bus.hasListeners(event)) return;
+
+    const ctx = runtime.acquireContext();
+    ctx.setUDP(socket);
+
+    const finalize = () => {
+      ctx.dispose();
+      runtime.releaseContext(ctx);
+    };
+
+    try {
+      const emitResult = runtime.bus.hasListeners(event)
+        ? runtime.bus.emitAsync(event, ctx, payload, { source: "udp-router" })
+        : undefined;
+
+      const runHook = async () => {
+        if (emitResult) await emitResult;
+        if (!ctx.isStopped() && hook) await hook(ctx, ...args);
+      };
+
+      const result = runHook();
+      result.catch(this.udpHookError).finally(finalize);
+    } catch (err) {
+      finalize();
+      this.udpHookError(err);
+    }
+  }
+}

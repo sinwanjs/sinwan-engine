@@ -392,9 +392,15 @@ export class Router implements Plugin {
   group(prefix: string, callback: (router: Router) => void) {
     const childRouter = new Router();
     callback(childRouter);
+    this.mount(prefix, childRouter);
+  }
 
+  /** Mount an existing router instance under a prefix. */
+  mount(prefix: string, router: Router) {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
-    const childRoutes = childRouter.routes;
+    // Use the public routes property if available, otherwise fallback
+    // We cast to access private routes for internal mounting
+    const childRoutes = (router as any).routes as RouteRecord[];
     const childRouteCount = childRoutes.length;
     for (let routeIndex = 0; routeIndex < childRouteCount; routeIndex += 1) {
       const route = childRoutes[routeIndex];

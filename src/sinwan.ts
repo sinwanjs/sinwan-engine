@@ -11,6 +11,12 @@ import {
   type TCPListenOptions,
   type TCPRouteConfig,
 } from "./tcp-router";
+import {
+  UDPRouter,
+  type UDPConnectOptions,
+  type UDPListenOptions,
+  type UDPRouteConfig,
+} from "./udp-router";
 import { LifecycleManager } from "./lifecycle-manager";
 import type { Context } from "./context";
 import type {
@@ -61,6 +67,9 @@ export class Sinwan {
 
   /** TCP Router: Handles TCP route registration and Bun TCP server dispatch.*/
   public readonly tcpRouter: TCPRouter;
+
+  /** UDP Router: Handles UDP route registration and socket dispatch.*/
+  public readonly udpRouter: UDPRouter;
 
   /** Runtime: Handles the runtime for the application.*/
   public readonly runtime: Runtime;
@@ -117,6 +126,7 @@ export class Sinwan {
       this.wsRouter.setOptions(options.websocket);
     }
     this.tcpRouter = new TCPRouter();
+    this.udpRouter = new UDPRouter();
   }
 
   /**
@@ -218,6 +228,10 @@ export class Sinwan {
     this.tcpRouter.tcp(name, config);
   }
 
+  udp<T = unknown>(name: string, config: UDPRouteConfig<T>): void {
+    this.udpRouter.udp(name, config);
+  }
+
   /**
    * Register a route handler for all HTTP methods.
    * @param handlers The route handlers to register.
@@ -233,6 +247,48 @@ export class Sinwan {
    */
   group(prefix: string, callback: (router: Router) => void) {
     this.router.group(prefix, callback);
+  }
+
+  /**
+   * Mount an existing router instance under a prefix.
+   * @param prefix The prefix to mount the router at.
+   * @param router The router instance to mount.
+   */
+  mount(prefix: string, router: Router) {
+    this.router.mount(prefix, router);
+  }
+
+  /**
+   * Utility for testing and programmatic requests.
+   * Send a mock request to the application.
+   *
+   * @param input A URL string, path, or a full Request object.
+   * @param init Optional RequestInit options (method, headers, body, etc.).
+   * @param server Optional mock Server object.
+   * @returns A Promise resolving to a Response object.
+   */
+  request(
+    input: globalThis.Request | string | URL,
+    init?: RequestInit,
+    server?: Server<any>,
+  ): Response | Promise<Response> {
+    if (input instanceof globalThis.Request) {
+      if (init !== undefined) {
+        input = new globalThis.Request(input, init);
+      }
+      return this.runtime.fetch(input as any, server || ({} as any));
+    }
+
+    // Support relative paths by providing a base URL
+    const url =
+      typeof input === "string" && input.startsWith("/")
+        ? `http://localhost${input}`
+        : input.toString();
+
+    return this.runtime.fetch(
+      new globalThis.Request(url, init) as any,
+      server || ({} as any),
+    );
   }
 
   /**
@@ -259,6 +315,20 @@ export class Sinwan {
     config: TCPClientConfig<T>,
   ): Promise<Socket<any>> {
     return this.tcpRouter.connect(this.runtime, name, options, config);
+  }
+
+  listenUDP<T = unknown>(
+    name: string,
+    options: UDPListenOptions<T>,
+  ): Promise<import("./udp-router").SinwanUDPSocket<T>> {
+    return this.udpRouter.listen(this.runtime, name, options);
+  }
+
+  connectUDP<T = unknown>(
+    name: string,
+    options: UDPConnectOptions<T>,
+  ): Promise<import("./udp-router").SinwanUDPSocket<T>> {
+    return this.udpRouter.connect(this.runtime, name, options);
   }
 
   /**
@@ -347,6 +417,7 @@ export class Sinwan {
 
     this.server.stop(closeConn);
     this.tcpRouter.stop(closeConn);
+    this.udpRouter.stop();
     this.tcpServers.length = 0;
 
     await this.lifecycle.destroy();

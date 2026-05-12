@@ -1,27 +1,27 @@
 {
   "compilerOptions": {
     // Environment setup & latest features
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM"],
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
     "jsx": "react-jsx",
-    "jsxImportSource": "sinwan-jsx",
+    "jsxImportSource": "sjs",
     "allowJs": true,
     "types": ["bun"],
 
     // Bundler mode
     "moduleResolution": "bundler",
-
-    // Map custom JSX runtime
-    "paths": {
-      "sinwan-jsx/jsx-runtime": ["./src/view/jsx/jsx-runtime.ts"],
-      "sinwan-jsx/jsx-dev-runtime": ["./src/view/jsx/jsx-dev-runtime.ts"],
-      "sinwan-jsx/jsx-types": ["./src/view/jsx-types.ts"]
-    },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
+
+    // Path mappings for JSX
+    "paths": {
+      "sjs/jsx-runtime": ["./src/jsx/jsx-runtime.ts"],
+      "sjs/jsx-dev-runtime": ["./src/jsx/jsx-dev-runtime.ts"],
+      "sjs": ["./src/index.ts"]
+    },
 
     // Best practices
     "strict": true,
