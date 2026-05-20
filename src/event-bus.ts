@@ -18,11 +18,21 @@ import type { Context } from "./context";
 import type {
   EmitOptions,
   EmitResult,
-  EventBusOptions,
   EventHandler,
   EventMeta,
   ListenerOptions,
 } from "./types";
+
+export interface EventBusOptions {
+  captureRejections?: boolean;
+  maxListeners?: number;
+  enableWildcards?: boolean;
+  wildcardDelimiter?: string;
+  /** Maximum cache entries for dispatch events. Default: 500. Set to 0 to disable. */
+  maxDispatchCacheSize?: number;
+  /** Maximum cache entries for hasListeners checks. Default: 500. Set to 0 to disable. */
+  maxHasListenersCacheSize?: number;
+}
 
 export class EventBus {
   private readonly emitter: EventEmitter;

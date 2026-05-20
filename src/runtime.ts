@@ -13,7 +13,7 @@ import type { Plugin } from "./types";
 import type { Request } from "./types";
 import type { Server } from "bun";
 
-interface RuntimeParams {
+export interface RuntimeConfig {
   engine: StepEngine;
   bus: EventBus;
   errorHandler: ErrorHandler;
@@ -31,7 +31,7 @@ export class Runtime {
 
   private readonly runtimeEmitOptions = { source: "runtime" as const };
 
-  constructor(params: RuntimeParams) {
+  constructor(params: RuntimeConfig) {
     this.engine = params.engine;
     this.bus = params.bus;
     this.errorHandler = params.errorHandler;

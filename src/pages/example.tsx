@@ -10,13 +10,7 @@
  * Run: bun run src/pages/example-server.tsx
  */
 
-import {
-  Sinwan,
-  registerPage,
-  createLayout,
-  createComponent,
-  createPage,
-} from "../index";
+import { cc, For } from "sinwan/component";
 
 // =============================================================================
 // LAYOUT
@@ -27,7 +21,7 @@ interface LayoutProps {
   description?: string;
 }
 
-const Layout = createLayout<LayoutProps>(({ title, description, children }) => (
+const Layout = cc<LayoutProps>(({ title, description, children }) => (
   <html lang="fr">
     <head>
       <meta charset="UTF-8" />
@@ -79,6 +73,7 @@ const Layout = createLayout<LayoutProps>(({ title, description, children }) => (
         </div>
       </footer>
     </body>
+    <script>{`console.log("test")`}</script>
   </html>
 ));
 
@@ -95,7 +90,7 @@ interface ArticleCardProps {
   tags: string[];
 }
 
-const ArticleCard = createComponent<ArticleCardProps>(
+const ArticleCard = cc<ArticleCardProps>(
   ({ title, excerpt, slug, date, author, tags }) => (
     <div class="card">
       <div class="meta">
@@ -125,7 +120,7 @@ interface HomeData {
   message: string;
 }
 
-const HomePage = createPage<HomeData>(({ message }) => (
+export const HomePage = cc<HomeData>(({ message }) => (
   <Layout title="Accueil" description="Bienvenue sur le blog SinwanJS">
     <h1>Bienvenue!</h1>
     <p style="font-size: 1.1rem; color: #555; margin-bottom: 1.5rem">
@@ -163,23 +158,25 @@ interface BlogListData {
   }[];
 }
 
-const BlogListPage = createPage<BlogListData>(({ posts }) => (
+export const BlogListPage = cc<BlogListData>(({ posts }) => (
   <Layout title="Articles" description="Tous les articles du blog">
     <h1>Articles</h1>
     <p style="color: #555; margin-bottom: 1.5rem">
       {posts.length} article{posts.length > 1 ? "s" : ""} disponible
       {posts.length > 1 ? "s" : ""}
     </p>
-    {posts.map((post) => (
-      <ArticleCard
-        title={post.title}
-        excerpt={post.excerpt}
-        slug={post.slug}
-        date={post.date}
-        author={post.author}
-        tags={post.tags}
-      />
-    ))}
+    <For each={posts}>
+      {(post) => (
+        <ArticleCard
+          title={post.title}
+          excerpt={post.excerpt}
+          slug={post.slug}
+          date={post.date}
+          author={post.author}
+          tags={post.tags}
+        />
+      )}
+    </For>
   </Layout>
 ));
 
@@ -194,7 +191,7 @@ interface BlogPostData {
   };
 }
 
-const BlogPostPage = createPage<BlogPostData>(({ post }) => (
+export const BlogPostPage = cc<BlogPostData>(({ post }) => (
   <Layout title={post.title}>
     <article>
       <h1>{post.title}</h1>
@@ -215,7 +212,7 @@ const BlogPostPage = createPage<BlogPostData>(({ post }) => (
 ));
 
 // --- About Page ---
-const AboutPage = createPage<{}>(() => (
+export const AboutPage = cc<{}>(() => (
   <Layout title="À propos">
     <h1>À propos</h1>
     <div class="card">
@@ -236,104 +233,73 @@ const AboutPage = createPage<{}>(() => (
   </Layout>
 ));
 
-// =============================================================================
-// SERVER
-// =============================================================================
-
-// Register all pages
-registerPage("home", HomePage);
-registerPage("blog-list", BlogListPage);
-registerPage("blog-post", BlogPostPage);
-registerPage("about", AboutPage);
-
-// Simulated blog data
-const POSTS = [
-  {
-    id: 1,
-    title: "Introduction à SinwanJS",
-    slug: "introduction-sinwanjs",
-    excerpt:
-      "Découvrez comment construire des applications web performantes avec SinwanJS et Bun.",
-    content:
-      "<p>SinwanJS est un framework web moderne conçu pour tirer parti de la vitesse de Bun.</p><p>Il offre un système de rendu JSX natif qui compile en constructeurs de chaînes optimisés, avec support du streaming progressif.</p><p>Grâce au context pooling et au routeur radix-tree, les performances sont au rendez-vous même sous forte charge.</p>",
-    date: "2024-01-15",
-    author: "Mohammed",
-    tags: ["JavaScript", "Framework", "Bun"],
-  },
-  {
-    id: 2,
-    title: "Streaming SSR avec Bun",
-    slug: "streaming-ssr-bun",
-    excerpt:
-      "Comment implémenter le streaming SSR progressif pour améliorer le Time-to-First-Byte.",
-    content:
-      "<p>Le streaming SSR permet d'envoyer le HTML progressivement au navigateur sans attendre que toute la page soit générée.</p><p>Avec SinwanJS, il suffit d'utiliser <code>c.streamRender()</code> au lieu de <code>c.render()</code> pour activer le streaming.</p><p>Le résultat: un TTFB bien meilleur et une meilleure expérience utilisateur.</p>",
-    date: "2024-01-10",
-    author: "Mohammed",
-    tags: ["SSR", "Streaming", "Performance"],
-  },
-  {
-    id: 3,
-    title: "Architecture des composants JSX",
-    slug: "architecture-composants-jsx",
-    excerpt:
-      "Organisez votre UI avec des composants réutilisables, layouts et pages typés.",
-    content:
-      "<p>SinwanJS utilise un système de composants JSX avec trois niveaux:</p><p><strong>createComponent</strong> — composants réutilisables (header, card, footer...)</p><p><strong>createLayout</strong> — structure HTML commune (html, head, body)</p><p><strong>createPage</strong> — pages typées recevant des données du serveur</p>",
-    date: "2024-01-05",
-    author: "Mohammed",
-    tags: ["JSX", "Composants", "Architecture"],
-  },
-];
-
-// Create the app
-const app = new Sinwan();
-
-// Route: Home
-app.get("/", (c) => {
-  return c.render("home", {
-    message:
-      "Ce site est un exemple de Server-Side Rendering avec SinwanJS. Chaque page est rendue en HTML côté serveur grâce au moteur JSX intégré.",
-  });
-});
-
-// Route: Blog list (uses streaming SSR for progressive rendering)
-app.get("/blog", (c) => {
-  c.streamRender("blog-list", { posts: POSTS });
-});
-
-// Route: Individual blog post
-app.get("/blog/:slug", (c) => {
-  const slug = c.params.slug;
-  const post = POSTS.find((p) => p.slug === slug);
-
-  if (!post) {
-    c.html("<h1>404 — Article non trouvé</h1>", 404);
-    return;
-  }
-
-  return c.render("blog-post", { post });
-});
-
-// Route: About
-app.get("/about", (c) => {
-  return c.render("about", {});
-});
-
-// Route: JSON API (bonus)
-app.get("/api/posts", (c) => {
-  c.json(POSTS);
-});
-
-// Start the server
-const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`\n🚀 SinwanJS SSR Server running at http://localhost:${PORT}\n`);
-  console.log("  Routes:");
-  console.log("    GET /          → Page d'accueil (render)");
-  console.log("    GET /blog      → Liste des articles (streamRender)");
-  console.log("    GET /blog/:slug → Article individuel (render)");
-  console.log("    GET /about     → Page à propos (render)");
-  console.log("    GET /api/posts → API JSON");
-  console.log("");
-});
+// --- Form Test Page ---
+export const FormTestPage = cc<{}>(() => (
+  <Layout title="Test Formulaire">
+    <h1>Test Formulaire</h1>
+    <div class="card">
+      <h2>Envoyer des données au serveur</h2>
+      <form
+        action="/form-submit"
+        method="POST"
+        id="testForm"
+        style="display: flex; flex-direction: column; gap: 1rem;"
+      >
+        <div>
+          <label style="display: block; margin-bottom: 0.5rem; font-weight: bold;">
+            Nom:
+          </label>
+          <input
+            type="text"
+            id="name"
+            name="name"
+            required
+            style="width: 100%; padding: 0.75rem; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 1rem;"
+          />
+        </div>
+        <div>
+          <label style="display: block; margin-bottom: 0.5rem; font-weight: bold;">
+            Email:
+          </label>
+          <input
+            type="email"
+            id="email"
+            name="email"
+            required
+            style="width: 100%; padding: 0.75rem; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 1rem;"
+          />
+        </div>
+        <div>
+          <label style="display: block; margin-bottom: 0.5rem; font-weight: bold;">
+            Message:
+          </label>
+          <textarea
+            id="message"
+            name="message"
+            required
+            rows="4"
+            style="width: 100%; padding: 0.75rem; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 1rem; resize: vertical;"
+          />
+        </div>
+        <button
+          type="submit"
+          style="background: #2563eb; color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 4px; font-size: 1rem; font-weight: bold; cursor: pointer; width: fit-content;"
+        >
+          Envoyer
+        </button>
+      </form>
+      <div
+        id="result"
+        style="margin-top: 1rem; padding: 1rem; border-radius: 4px; display: none;"
+      ></div>
+    </div>
+    <div class="card">
+      <h2>Instructions</h2>
+      <p>Remplissez le formulaire ci-dessus et cliquez sur "Envoyer".</p>
+      <p>
+        Les données seront envoyées au serveur via POST en JSON et loggées dans
+        la console.
+      </p>
+    </div>
+  </Layout>
+));

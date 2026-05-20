@@ -127,25 +127,6 @@ export interface SSEController {
   close(): void;
 }
 
-export interface EventBusOptions {
-  captureRejections?: boolean;
-  maxListeners?: number;
-  enableWildcards?: boolean;
-  wildcardDelimiter?: string;
-  /** Maximum cache entries for dispatch events. Default: 500. Set to 0 to disable. */
-  maxDispatchCacheSize?: number;
-  /** Maximum cache entries for hasListeners checks. Default: 500. Set to 0 to disable. */
-  maxHasListenersCacheSize?: number;
-}
-
-export interface ContextOptions {
-  requestId?: string;
-  bus?: EventBus;
-  trace?: EventTraceOptions;
-  server?: any;
-  global?: Map<string, any>;
-}
-
 export interface SaveFileOptions {
   /** Maximum file size in bytes. */
   maxSize?: number;
@@ -232,6 +213,7 @@ export type InternalEventMap = {
 export interface ErrorPayload {
   message: string;
   statusCode?: number;
+  stack?: string;
 }
 
 // ─── Plugin System ──────────────────────────────────────────

@@ -12,10 +12,15 @@
  *  - Context can interact with the EventBus when attached.
  */
 
-import type { CookieMap, Server, ServerWebSocket, Socket } from "bun";
+import {
+  type CookieMap,
+  type Server,
+  type ServerWebSocket,
+  type Socket,
+  randomUUIDv7,
+} from "bun";
 import type { EventBus } from "./event-bus";
 import type {
-  ContextOptions,
   EmitOptions,
   EmitResult,
   EventHandler,
@@ -30,20 +35,15 @@ import type {
   ResponseKind,
 } from "./types";
 import type { SinwanUDPSocket } from "./udp-router";
-import type { SjsPage } from "./view/types";
-import { registerPage, getPage, renderPage } from "./view/renderer";
-import { streamPage } from "./view/stream";
-import type { HtmlEscapedString } from "./view/jsx/jsx-runtime";
-
-// Proper typed HTTP error class
-class HttpError extends Error {
-  public readonly statusCode: number;
-  constructor(message: string, statusCode: number) {
-    super(message);
-    this.name = "HttpError";
-    this.statusCode = statusCode;
-  }
-}
+import type { SinwanComponent } from "sinwan/component";
+import {
+  streamPage,
+  getPage,
+  renderPage,
+  hasPage,
+  registerPage,
+} from "sinwan/server";
+import { HttpError } from "./http-error";
 
 export interface WSSData {
   path: string;
@@ -58,6 +58,14 @@ export interface TCPData {
 export interface UDPData {
   name: string;
   data: unknown;
+}
+
+export interface ContextOptions {
+  requestId?: string;
+  bus?: EventBus;
+  trace?: EventTraceOptions;
+  server?: any;
+  global?: Map<string, any>;
 }
 
 export class Context<T = unknown> {
@@ -100,13 +108,12 @@ export class Context<T = unknown> {
   private readonly global: Map<string, any>;
   public params: Record<string, string> = {};
   private _requestId: string = "";
-  private static _idCounter: number = 0;
 
   public maxBodySize: number = 10 * 1024 * 1024; // Default 10MB
 
   get requestId(): string {
     if (this._requestId === "") {
-      this._requestId = `req-${++Context._idCounter}`;
+      this._requestId = `sinwan-request-${randomUUIDv7()}`;
     }
     return this._requestId;
   }
@@ -221,50 +228,128 @@ export class Context<T = unknown> {
     this.req = req;
   }
 
+  /**
+   * Set the WebSocket (must be called before execute)
+   */
   setWS(ws: ServerWebSocket<WSSData>): void {
     this.ws = ws;
   }
 
+  /**
+   * Set the TCP socket (must be called before execute)
+   */
   setTCP(tcp: Socket<TCPData>): void {
     this.tcp = tcp;
   }
 
+  /**
+   * Set the UDP socket (must be called before execute)
+   */
   setUDP(udp: SinwanUDPSocket<UDPData>): void {
     this.udp = udp;
   }
 
   // ─── State Management ───────────────────────────────────
-
   /** Set a value in the request state. */
-  set(key: string, value: any): void {
+  set<K extends string, V>(key: K, value: V): void {
     this.state.set(key, value);
   }
 
   /** Get a value from the request state. */
-  get<T = any>(key: string): T | undefined {
+  get<K extends string, T>(key: K): T | undefined {
     return this.state.get(key) as T;
   }
 
+  /** Get a value from the request state and remove it. */
+  getOnce<K extends string, T = any>(key: K): T | undefined {
+    const value = this.state.get(key) as T | undefined;
+    this.state.delete(key);
+    return value;
+  }
+
+  /** Update an existing value in the request state. */
+  update<K extends string, T = any>(
+    key: K,
+    updater: (prev: T | undefined) => T,
+  ): T {
+    const nextValue = updater(this.get(key));
+    this.state.set(key, nextValue);
+    return nextValue;
+  }
+
+  /** Remove a value from the request state. */
+  clear<K extends string>(key: K): boolean {
+    return this.state.delete(key);
+  }
+
+  /** Remove all values from the request state. */
+  clearAll(): void {
+    this.state.clear();
+  }
+
   /** Check if a value exists in the request state. */
-  has(key: string): boolean {
+  has<K extends string>(key: K): boolean {
     return this.state.has(key);
+  }
+
+  /**
+   * Get a snapshot of the current request state as a readonly object.
+   * This is useful for debugging and logging.
+   */
+  snapshot(): Readonly<Partial<T>> {
+    return Object.freeze(Object.fromEntries(this.state) as Partial<T>);
   }
 
   // ─── Global State Management ──────────────────────────────
 
   /** Set a value in the global application state. */
-  setGlobal(key: string, value: any): void {
+  setGlobal<K extends string, V>(key: K, value: V): void {
     this.global.set(key, value);
   }
 
   /** Get a value from the global application state. */
-  getGlobal<T = any>(key: string): T | undefined {
-    return this.global.get(key) as T;
+  getGlobal<K extends string, V = any>(key: K): V | undefined {
+    return this.global.get(key) as V | undefined;
   }
 
-  /** Check if a value exists in the global state. */
-  hasGlobal(key: string): boolean {
+  /** Get a value from the global application state and remove it. */
+  getGlobalOnce<K extends string, V = any>(key: K): V | undefined {
+    const value = this.global.get(key) as V | undefined;
+    this.global.delete(key);
+    return value;
+  }
+
+  /** Update an existing value in the global application state. */
+  updateGlobal<K extends string, V>(
+    key: K,
+    updater: (prev: V | undefined) => V,
+  ): V {
+    const nextValue = updater(this.getGlobal(key));
+    this.global.set(key, nextValue);
+    return nextValue;
+  }
+
+  /** Remove a value from the global application state. */
+  clearGlobal<K extends string>(key: K): boolean {
+    return this.global.delete(key);
+  }
+
+  /** Remove all values from the global application state. */
+  clearAllGlobal(): void {
+    this.global.clear();
+  }
+
+  /** Check if a value exists in the global application state. */
+  hasGlobal<K extends string>(key: K): boolean {
     return this.global.has(key);
+  }
+
+  /**
+   * Get all global state as readonly object.
+   * This is useful for debugging and logging.
+   */
+  snapshotGlobal(): Readonly<Partial<T>> {
+    return Object.freeze(Object.fromEntries(this.global) as Partial<T>);
   }
 
   // ─── Response Methods ───────────────────────────────────
@@ -298,111 +383,120 @@ export class Context<T = unknown> {
    * Throws if a response has already been set.
    */
   html(
-    htmlString: string | Promise<string> | any,
+    html: string | Promise<string> | any,
     status?: number,
   ): void | Promise<void> {
-    if (htmlString instanceof Promise) {
-      return htmlString.then((str) => {
+    if (html instanceof Promise) {
+      return html.then((str) => {
         this.guardDoubleResponse();
         this.commitResponse("text", str, status, "text/html; charset=UTF-8");
       });
     }
     this.guardDoubleResponse();
-    // Using String() converts our HtmlEscapedString to a raw string
-    this.commitResponse(
-      "text",
-      String(htmlString),
-      status,
-      "text/html; charset=UTF-8",
-    );
+
+    this.commitResponse("text", html, status, "text/html; charset=UTF-8");
   }
 
   /**
-   * Set a custom layout/template renderer function for the Context.
+   * Render a registered Sinwan page with data.
    */
-  setRenderer(
-    renderer: (content: any, head?: any) => void | Promise<void>,
-  ): void;
-  /**
-   * Register an SJS page renderer by name.
-   */
-  setRenderer<D extends object = {}>(name: string, page: SjsPage<D>): void;
-  setRenderer(
-    arg1: string | ((content: any, head?: any) => void | Promise<void>),
-    arg2?: SjsPage<any> | ((content: any, head?: any) => void | Promise<void>),
-  ): void {
-    if (
-      typeof arg1 === "string" &&
-      arg2 &&
-      typeof arg2 === "function" &&
-      "_sjsPage" in arg2
-    ) {
-      // SJS page registration
-      registerPage(arg1, arg2 as SjsPage<any>);
-    } else if (typeof arg1 === "function") {
-      // Legacy renderer function
-      this.set("renderer", arg1);
-    } else if (typeof arg1 === "string" && arg2) {
-      // Also support passing page directly
-      registerPage(arg1, arg2 as SjsPage<any>);
-    }
-  }
-
-  /**
-   * Render content using the configured layout renderer.
-   * If no renderer is set, falls back to rendering as an HTML string.
-   */
-  render(content: any, head?: any): void | Promise<void>;
-  /**
-   * Render a registered SJS page with data.
-   */
-  render<D extends object = {}>(name: string, data: D): Promise<void>;
-  render(arg1: any, arg2?: any): void | Promise<void> {
-    // Check if first arg is a registered page name
-    if (typeof arg1 === "string") {
-      const page = getPage(arg1);
-      if (page) {
-        return this.renderSjsPage(arg1, arg2);
-      }
-    }
-
-    // Legacy render path
-    const renderer =
-      this.get<(content: any, head?: any) => void | Promise<void>>("renderer");
-    if (renderer) {
-      return renderer(arg1, arg2);
-    }
-    return this.html(arg1);
-  }
-
-  /**
-   * Internal: Render an SJS page to HTML response.
-   */
-  private async renderSjsPage<D extends object = {}>(
+  async render<D extends object = {}>(
     name: string,
+    page: SinwanComponent<D>,
     data: D,
+    status: number = 200,
   ): Promise<void> {
-    const html = await renderPage(name, data);
-    this.html(html);
-  }
-
-  /**
-   * Stream a registered SJS page as HTML response.
-   */
-  streamRender<D extends object = {}>(name: string, data: D): void {
-    const page = getPage<D>(name);
-    if (!page) {
+    registerPage(name, page);
+    const hasPage = getPage(name);
+    if (!hasPage) {
       throw new Error(`Page "${name}" not found in registry`);
     }
 
-    const stream = streamPage(page, data);
-    this.stream(stream, 200, "text/html; charset=UTF-8");
+    const html = await renderPage(name, data);
+
+    this.html(html, status);
   }
 
-  redirect(location: string, status: number = 302): void {
+  /**
+   * Stream a registered Sinwan page as HTML response.
+   */
+  streamRender<D extends object = {}>(
+    name: string,
+    page: SinwanComponent<D>,
+    data: D,
+    status: number = 200,
+  ): void {
+    registerPage(name, page);
+    const hasPage = getPage<D>(name);
+    if (!hasPage) {
+      throw new Error(`Page "${name}" not found in registry`);
+    }
+    const stream = streamPage(page, data);
+    this.stream(stream, status, "text/html; charset=UTF-8");
+  }
+
+  /**
+   * Redirect to a location.
+   */
+  redirect(path: string, status: number = 302): void {
     this.guardDoubleResponse();
-    this.headers.set("Location", location);
+    const url = new URL(path, this.req.url);
+    this.headers.set("Location", url.toString());
     this.commitResponse("redirect", null, status);
+  }
+
+  /**
+   * Redirect to a location with temporary data.
+   * Data is stored in global state using a unique ephemeral key.
+   */
+  redirectWith<T>(
+    path: string,
+    data: T,
+    options: {
+      status?: 301 | 302 | 303 | 307 | 308;
+      keyParam?: string;
+    } = {},
+  ): void {
+    const { status = 302, keyParam = "redirect" } = options;
+
+    // Generate unique temporary key
+    const dataKey = `id_${crypto.randomUUID()}`;
+
+    // Store redirect payload
+    this.setGlobal(dataKey, data);
+
+    // Build safe URL
+    const url = new URL(path, this.req.url);
+    url.searchParams.set(keyParam, dataKey);
+
+    this.guardDoubleResponse();
+
+    this.headers.set("Location", url.toString());
+
+    this.commitResponse("redirect", null, status);
+  }
+
+  /**
+   * Retrieve and consume redirect data.
+   * The stored payload is removed immediately after access.
+   */
+  redirectData<V>(keyParam: string = "redirect"): V | undefined {
+    const url = new URL(this.req.url);
+
+    const dataKey = url.searchParams.get(keyParam);
+
+    console.log(dataKey);
+
+    if (!dataKey) {
+      return undefined;
+    }
+
+    // Prevent arbitrary global access
+    if (!dataKey.startsWith("id_")) {
+      return undefined;
+    }
+
+    return this.getGlobalOnce<string, V>(dataKey);
   }
 
   /**
@@ -588,10 +682,18 @@ export class Context<T = unknown> {
     this.server?.timeout(this.req, seconds);
   }
 
+  // WebSocket Methods
+
+  /**
+   * Get the number of pending WebSocket connections.
+   */
   get pendingWebSockets(): number {
     return this.getServer().pendingWebSockets;
   }
 
+  /**
+   * Publish a message to a topic.
+   */
   publishToTopic(
     topic: string,
     data: Parameters<Server<any>["publish"]>[1],
@@ -600,42 +702,72 @@ export class Context<T = unknown> {
     return this.getServer().publish(topic, data, compress);
   }
 
+  /**
+   * Get the data associated with this WebSocket.
+   */
   get data(): T {
     return this.getWebSocket().data.data as T;
   }
 
+  /**
+   * Get the path of this WebSocket.
+   */
   get path(): string {
     return this.getWebSocket().data.path;
   }
 
+  /**
+   * Get the remote address of this WebSocket.
+   */
   get remoteAddress(): string {
     return this.getWebSocket().remoteAddress;
   }
 
+  /**
+   * Get the ready state of this WebSocket.
+   */
   get readyState(): number {
     return this.getWebSocket().readyState;
   }
 
+  /**
+   * Get the subscriptions of this WebSocket.
+   */
   get subscriptions(): string[] {
     return this.getWebSocket().subscriptions;
   }
 
+  /**
+   * Send a message to this WebSocket.
+   */
   send(message: string | ArrayBuffer | Uint8Array, compress?: boolean): number {
     return this.getWebSocket().send(message, compress);
   }
 
+  /**
+   * Close this WebSocket.
+   */
   close(code?: number, reason?: string): void {
     this.getWebSocket().close(code, reason);
   }
 
+  /**
+   * Subscribe to a topic [webSocket].
+   */
   subscribe(topic: string): void {
     this.getWebSocket().subscribe(topic);
   }
 
+  /**
+   * Unsubscribe from a topic [webSocket].
+   */
   unsubscribe(topic: string): void {
     this.getWebSocket().unsubscribe(topic);
   }
 
+  /**
+   * Publish a message to a topic [webSocket].
+   */
   publish(
     topic: string,
     message: string | ArrayBuffer | Uint8Array,
@@ -644,30 +776,53 @@ export class Context<T = unknown> {
     return this.getWebSocket().publish(topic, message, compress);
   }
 
+  /**
+   * Check if this WebSocket is subscribed to a topic [webSocket].
+   */
   isSubscribed(topic: string): boolean {
     return this.getWebSocket().isSubscribed(topic);
   }
 
+  /**
+   * Cork this WebSocket.
+   */
   cork(cb: (ctx: Context<T>) => void): void {
     this.getWebSocket().cork(() => cb(this));
   }
 
+  // TCP Socket Methods
+
+  /**
+   * Get the data associated with this TCP socket.
+   */
   get tcpData(): T {
     return this.getTCPSocket().data.data as T;
   }
 
+  /**
+   * Get the name of this TCP socket.
+   */
   get tcpName(): string {
     return this.getTCPSocket().data.name;
   }
 
+  /**
+   * Get the remote address of this TCP socket.
+   */
   get tcpRemoteAddress(): string {
     return this.getTCPSocket().remoteAddress;
   }
 
+  /**
+   * Get the local address of this TCP socket.
+   */
   get tcpLocalAddress(): string {
     return this.getTCPSocket().localAddress;
   }
 
+  /**
+   * Write data to this TCP socket.
+   */
   write(
     data: Parameters<Socket<TCPData>["write"]>[0],
     byteOffset?: number,
@@ -676,6 +831,9 @@ export class Context<T = unknown> {
     return this.getTCPSocket().write(data, byteOffset, byteLength);
   }
 
+  /**
+   * End this TCP socket.
+   */
   end(
     data?: Parameters<Socket<TCPData>["write"]>[0],
     byteOffset?: number,
@@ -684,30 +842,53 @@ export class Context<T = unknown> {
     return this.getTCPSocket().end(data, byteOffset, byteLength);
   }
 
+  /**
+   * Flush this TCP socket.
+   */
   flush(): void {
     this.getTCPSocket().flush();
   }
 
+  /**
+   * Set the timeout for this TCP socket.
+   */
   timeout(seconds: number): void {
     this.getTCPSocket().timeout(seconds);
   }
 
+  // UDP Socket Methods
+
+  /**
+   * Get the data associated with this UDP socket.
+   */
   get udpData(): T {
     return this.getUDPSocket().data.data as T;
   }
 
+  /**
+   * Get the name of this UDP socket.
+   */
   get udpName(): string {
     return this.getUDPSocket().data.name;
   }
 
+  /**
+   * Get the address of this UDP socket.
+   */
   get udpAddress(): import("bun").SocketAddress {
     return this.getUDPSocket().address;
   }
 
+  /**
+   * Check if this UDP socket is closed.
+   */
   get udpClosed(): boolean {
     return this.getUDPSocket().closed;
   }
 
+  /**
+   * Send data to a UDP socket.
+   */
   sendUDP(
     data: Parameters<SinwanUDPSocket<any>["send"]>[0],
     port?: number,
@@ -719,12 +900,18 @@ export class Context<T = unknown> {
     return this.getUDPSocket().send(data);
   }
 
+  /**
+   * Send multiple packets to a UDP socket.
+   */
   sendManyUDP(
     packets: Parameters<SinwanUDPSocket<any>["sendMany"]>[0],
   ): number {
     return this.getUDPSocket().sendMany(packets);
   }
 
+  /**
+   * Add a multicast membership to this UDP socket.
+   */
   addMembershipUDP(
     multicastAddress: string,
     interfaceAddress?: string,
@@ -735,6 +922,9 @@ export class Context<T = unknown> {
     );
   }
 
+  /**
+   * Drop a multicast membership from this UDP socket.
+   */
   dropMembershipUDP(
     multicastAddress: string,
     interfaceAddress?: string,
@@ -1480,20 +1670,5 @@ export class Context<T = unknown> {
         } as AsyncGenerator<any, void, unknown>;
       },
     };
-  }
-
-  /**
-   * Create a request ID.
-   */
-  private createRequestId(): string {
-    if (
-      typeof crypto !== "undefined" &&
-      typeof crypto.randomUUID === "function"
-    ) {
-      return crypto.randomUUID();
-    }
-
-    const rand = Math.random().toString(16).slice(2);
-    return `req_${Date.now().toString(16)}_${rand}`;
   }
 }

@@ -6,19 +6,19 @@
 
 // ─── Classes ──────────────────────────────────────────────
 
-export { Context } from "./context";
+export { Context, type ContextOptions } from "./context";
 export type { TCPData, WSSData, UDPData } from "./context";
 export { StepEngine } from "./step-engine";
-export { EventBus } from "./event-bus";
-export { ErrorHandler } from "./error-handler";
+export { EventBus, type EventBusOptions } from "./event-bus";
+export { ErrorHandler, type ErrorHandlerOptions } from "./error-handler";
 export type { ErrorHook } from "./error-handler";
-export { Runtime } from "./runtime";
-export { Sinwan, type AppOptions } from "./sinwan";
+export { Runtime, type RuntimeConfig } from "./runtime";
+export { Sinwan, type SinwanOptions } from "./sinwan";
 // ─── Functions ────────────────────────────────────────────
 
 export { buildResponse } from "./response";
 
-export { Router } from "./router";
+export { Router, type RouteHandler } from "./router";
 
 export { WSRouter } from "./ws-router";
 export type {
@@ -58,44 +58,6 @@ export type {
 
 export { captureRejectionSymbol, errorMonitor } from "node:events";
 
-// ─── View Module (JSX Templating) ─────────────────────────
-
-export {
-  sjs,
-  createComponent,
-  createPage,
-  createLayout,
-  registerPage,
-  getPage,
-  hasPage,
-  renderPage,
-  renderToString,
-  streamPage,
-  escapeHtml,
-  safeHtml,
-  isSafeHtml,
-  HtmlEscapedString,
-  isSlots,
-} from "./view";
-
-export type {
-  SjsNode,
-  SjsElement,
-  SjsComponent,
-  SjsPage,
-  SjsLayout,
-  SjsSlots,
-  SjsPrimitive,
-  RenderResult,
-  PropsWithChildren,
-  PropsWithSlots,
-  ViewContextMethods,
-} from "./view";
-
-// ─── JSX (from View Module) ───────────────────────────────
-
-export { jsx, jsxs, jsxDEV, Fragment, raw } from "./view/jsx/jsx-runtime";
-
 // ─── Types ────────────────────────────────────────────────
 
 export type {
@@ -108,14 +70,17 @@ export type {
   EmitOptions,
   EmitResult,
   ListenerOptions,
-  EventBusOptions,
   EventTraceEntry,
   EventTraceOptions,
-  ContextOptions,
   SSEOptions,
   SSEController,
   InternalEventPayloads,
   InternalEventMap,
   ErrorPayload,
   Plugin,
+  LifecycleEvent,
+  LifecycleState,
+  ResponseKind,
+  Request,
+  SaveFileOptions,
 } from "./types";

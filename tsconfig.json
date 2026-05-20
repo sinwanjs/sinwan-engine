@@ -6,19 +6,13 @@
     "module": "Preserve",
     "moduleDetection": "force",
     "jsx": "react-jsx",
-    "jsxImportSource": "sinwan-jsx",
+    "jsxImportSource": "sinwan",
     "allowJs": true,
     "types": ["bun"],
 
     // Bundler mode
     "moduleResolution": "bundler",
 
-    // Map custom JSX runtime
-    "paths": {
-      "sinwan-jsx/jsx-runtime": ["./src/view/jsx/jsx-runtime.ts"],
-      "sinwan-jsx/jsx-dev-runtime": ["./src/view/jsx/jsx-dev-runtime.ts"],
-      "sinwan-jsx/jsx-types": ["./src/view/jsx-types.ts"]
-    },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,

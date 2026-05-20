@@ -1,6 +1,10 @@
 import { StepEngine } from "./step-engine";
 import { EventBus } from "./event-bus";
-import { ErrorHandler, type ErrorHook } from "./error-handler";
+import {
+  ErrorHandler,
+  type ErrorHandlerOptions,
+  type ErrorHook,
+} from "./error-handler";
 import { Runtime } from "./runtime";
 import { Router, type RouteHandler } from "./router";
 import { WSRouter, type WSRouteConfig, type WSOptions } from "./ws-router";
@@ -42,13 +46,14 @@ function createLifecycleContext(): Context {
   } as unknown as Context;
 }
 
-export interface AppOptions {
-  onError?: ErrorHook;
+export interface SinwanOptions {
   idleTimeout?: number;
   /** Maximum number of contexts to keep in the pool. Default: 1000 */
   maxPoolSize?: number;
   /** WebSocket server-level options (compression, limits, etc). */
   websocket?: WSOptions;
+  /** Error handler options. */
+  error?: ErrorHandlerOptions;
 }
 
 export class Sinwan {
@@ -79,32 +84,31 @@ export class Sinwan {
 
   /** Lifecycle Manager: Manages the application lifecycle.*/
   private readonly lifecycle: LifecycleManager;
+
+  /** Lifecycle Context: Context for lifecycle events.*/
   private readonly lifecycleCtx: Context;
 
   /** Shared State: Manages the shared state for the application.*/
   private readonly sharedState = new Map<string, any>();
 
   /** Config: Manages the configuration for the application.*/
-  private readonly config: AppOptions;
+  private readonly config: SinwanOptions;
 
   /** Server: Manages the server for the application.*/
   private server?: Server<any>;
 
-  private tcpServers: Array<TCPSocketListener<any> | UnixSocketListener<any>> =
-    [];
-
   /**
    * Create a new SinwanJS application.
    * @param options Configuration options for the application.
-   * @param options.onError Optional error handler function.
    * @param options.idleTimeout Optional idle timeout in milliseconds.
    * @param options.maxPoolSize Maximum context pool size (default: 1000).
+   * @param options.error Error handler options. If not provided, default error handling will be used.
    */
-  constructor(options: AppOptions = {}) {
+  constructor(options: SinwanOptions = {}) {
     this.config = options;
     this.engine = new StepEngine();
     this.bus = new EventBus();
-    this.errorHandler = new ErrorHandler({ onError: options.onError });
+    this.errorHandler = new ErrorHandler(options.error ?? {});
     this.router = new Router();
 
     this.lifecycleCtx = createLifecycleContext();
@@ -117,7 +121,7 @@ export class Sinwan {
       maxPoolSize: options.maxPoolSize,
     });
 
-    this.lifecycle = new LifecycleManager(this.bus);
+    this.lifecycle = new LifecycleManager(this.bus, this.lifecycleCtx);
 
     this.runtime.use(this.router);
 
@@ -127,14 +131,6 @@ export class Sinwan {
     }
     this.tcpRouter = new TCPRouter();
     this.udpRouter = new UDPRouter();
-  }
-
-  /**
-   * Initialize the application and internal systems.
-   * This method should be called before starting the server.
-   */
-  async init(): Promise<void> {
-    await this.lifecycle.init({ options: this.config });
   }
 
   /**
@@ -304,9 +300,7 @@ export class Sinwan {
     name: string,
     options: TCPListenOptions<T>,
   ): TCPSocketListener<any> | UnixSocketListener<any> {
-    const server = this.tcpRouter.listen(this.runtime, name, options);
-    this.tcpServers.push(server);
-    return server;
+    return this.tcpRouter.listen(this.runtime, name, options);
   }
 
   connectTCP<T = unknown>(
@@ -342,6 +336,7 @@ export class Sinwan {
     port: number | string = 3000,
     callback?: () => void,
   ): Promise<Server<any>> {
+    await this.lifecycle.init({ options: this.config });
     // Initialize lifecycle if not already done
     if (this.lifecycle.getState() === ("idle" as any)) {
       try {
@@ -418,7 +413,6 @@ export class Sinwan {
     this.server.stop(closeConn);
     this.tcpRouter.stop(closeConn);
     this.udpRouter.stop();
-    this.tcpServers.length = 0;
 
     await this.lifecycle.destroy();
 
