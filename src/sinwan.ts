@@ -336,13 +336,11 @@ export class Sinwan {
     port: number | string = 3000,
     callback?: () => void,
   ): Promise<Server<any>> {
-    await this.lifecycle.init({ options: this.config });
-    // Initialize lifecycle if not already done
+    // Initialize lifecycle 
     if (this.lifecycle.getState() === ("idle" as any)) {
       try {
         await this.lifecycle.init({ options: this.config });
       } catch (error) {
-        // Re-throw with context for better error messages
         throw new Error(
           `Failed to initialize application: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },

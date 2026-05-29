@@ -1,3 +1,0 @@
-# Configure Bun to use sinwan as JSX import source
-[loader]
-".tsx": "tsx"

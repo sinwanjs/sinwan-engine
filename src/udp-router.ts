@@ -1,5 +1,4 @@
-import type { SocketAddress } from "bun";
-import type { udp } from "bun";
+ import type { udp } from "bun";
 import type { Context, UDPData } from "./context";
 import type { Runtime } from "./runtime";
 

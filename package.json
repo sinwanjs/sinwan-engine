@@ -3,13 +3,12 @@
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
-    "build": "bun run build.ts",
-    "ex3": "bun --watch src/examples/ex3.ts"
+    "build": "bun run build.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "happy-dom": "^20.9.0",
-    "sinwan": "1.2.3"
+    "sinwan": "1.2.4"
   },
   "peerDependencies": {
     "typescript": "^5"
