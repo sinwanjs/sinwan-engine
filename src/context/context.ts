@@ -19,7 +19,7 @@ import {
   type Socket,
   randomUUIDv7,
 } from "bun";
-import type { EventBus } from "./event-bus";
+import type { EventBus } from "../event-bus";
 import type {
   EmitOptions,
   EmitResult,
@@ -33,21 +33,16 @@ import type {
   Request,
   SaveFileOptions,
   ResponseKind,
-} from "./types";
-import type { SinwanUDPSocket } from "./udp-router";
-import type { SinwanComponent } from "sinwan/component";
-import {
-  streamPage,
-  getPage,
-  renderPage,
-  hasPage,
-  registerPage,
-} from "sinwan/server";
-import { HttpError } from "./http-error";
+} from "../types";
+import type { SinwanUDPSocket } from "../routers/udp-router";
+import { SocketHelper } from "./socket-helper";
+import type { ErrorHandler } from "../error-handler";
 
 export interface WSSData {
   path: string;
   data: unknown;
+  /** Snapshot of the Context state from the upgrade request. */
+  state?: Record<string, unknown>;
 }
 
 export interface TCPData {
@@ -60,17 +55,47 @@ export interface UDPData {
   data: unknown;
 }
 
+export interface GRPCData {
+  name: string;
+  package?: string;
+  service: string;
+  method: string;
+  path: string;
+  kind: "unary" | "serverStream" | "clientStream" | "bidi";
+  request?: unknown;
+  call: unknown;
+  metadata: unknown;
+  data: unknown;
+}
+
 export interface ContextOptions {
   requestId?: string;
   bus?: EventBus;
   trace?: EventTraceOptions;
   server?: any;
+  errorHandler: ErrorHandler;
   global?: Map<string, any>;
 }
 
-export class Context<T = unknown> {
+/**
+ * Custom HTTP error class for handling HTTP-specific errors.
+ * Extends the native Error class with a statusCode property.
+ */
+class HttpError extends Error {
+  public readonly statusCode: number;
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = "HttpError";
+    this.statusCode = statusCode;
+  }
+}
+
+export class Context {
   /** The incoming Bun/Web API Request. */
   public req: Request;
+
+  /** Cached pathname parsed from the request URL. */
+  public pathname: string = "";
 
   /**
    * The Bun Server instance (if provided).
@@ -78,11 +103,15 @@ export class Context<T = unknown> {
    */
   public server: Server<any> | undefined;
 
+  private errorHandler: ErrorHandler;
+
   public ws?: ServerWebSocket<WSSData>;
 
   public tcp?: Socket<TCPData>;
 
   public udp?: SinwanUDPSocket<UDPData>;
+
+  public grpc?: GRPCData;
 
   /** HTTP status code for the response. */
   public statusCode: number = 200;
@@ -134,6 +163,8 @@ export class Context<T = unknown> {
   private _formData?: FormData;
   private _bus?: EventBus;
   private _onDisposeCallbacks: (() => void)[] = [];
+  private _released = false;
+  private readonly _sockets = new SocketHelper(this);
 
   /** @internal */
   public _meta: any = {
@@ -170,7 +201,7 @@ export class Context<T = unknown> {
     return this._scopedHandlers;
   }
 
-  constructor(options: ContextOptions = {}) {
+  constructor(options: ContextOptions) {
     this.req = undefined as unknown as Request;
     this.server = options.server;
     if (options.requestId) this._requestId = options.requestId;
@@ -183,17 +214,20 @@ export class Context<T = unknown> {
     };
 
     this.global = options.global ?? new Map();
+    this.errorHandler = options.errorHandler;
   }
 
   /**
    * Reset the context for reuse in a pool.
    */
-  reset(options: ContextOptions = {}): void {
+  reset(options: ContextOptions): void {
     this.req = undefined as unknown as Request;
+    this.pathname = "";
     this.server = options.server;
     this.ws = undefined;
     this.tcp = undefined;
     this.udp = undefined;
+    this.grpc = undefined;
     this.statusCode = 200;
     this.body = null;
     this.params = {};
@@ -203,6 +237,7 @@ export class Context<T = unknown> {
     this._formData = undefined;
     this._bus = options.bus;
     this._onDisposeCallbacks.length = 0;
+    this._released = false;
 
     // Reset meta
     this._meta.name = "";
@@ -218,7 +253,25 @@ export class Context<T = unknown> {
     if (this._eventTrace) this._eventTrace.length = 0;
     this._traceStart = 0;
     this._traceSize = 0;
-    if (this._scopedHandlers) this._scopedHandlers.clear();
+    this._scopedHandlers = undefined;
+  }
+
+  /**
+   * Handle an error that occurred during request processing.
+   * This method is called by the server when an error is thrown.
+   */
+  catch(error: unknown, ctx: Context, showMessageInProduction: boolean) {
+    this.errorHandler.handle(error, ctx, showMessageInProduction);
+  }
+
+  /**
+   * Mark this context as released to the pool.
+   * Returns `true` if it was already released (double-release guard).
+   */
+  markReleased(): boolean {
+    const wasReleased = this._released;
+    this._released = true;
+    return wasReleased;
   }
 
   /**
@@ -226,6 +279,16 @@ export class Context<T = unknown> {
    */
   setReq(req: Request): void {
     this.req = req;
+    const url = req.url;
+    const start = url.indexOf("//") + 2;
+    const pathStart = url.indexOf("/", start);
+    const queryStart = url.indexOf("?", pathStart);
+    this.pathname =
+      pathStart === -1
+        ? "/"
+        : queryStart === -1
+          ? url.slice(pathStart)
+          : url.slice(pathStart, queryStart);
   }
 
   /**
@@ -249,36 +312,57 @@ export class Context<T = unknown> {
     this.udp = udp;
   }
 
+  /**
+   * Set the gRPC call data (must be called before execute)
+   */
+  setGRPC(grpc: GRPCData): void {
+    this.grpc = grpc;
+  }
+
   // ─── State Management ───────────────────────────────────
   /** Set a value in the request state. */
-  set<K extends string, V>(key: K, value: V): void {
+  set<V>(key: string, value: V): void {
     this.state.set(key, value);
   }
 
   /** Get a value from the request state. */
-  get<K extends string, T>(key: K): T | undefined {
+  get<T>(key: string): T | undefined {
     return this.state.get(key) as T;
   }
 
   /** Get a value from the request state and remove it. */
-  getOnce<K extends string, T = any>(key: K): T | undefined {
+  getOnce<T>(key: string): T | undefined {
     const value = this.state.get(key) as T | undefined;
     this.state.delete(key);
     return value;
   }
 
+  /** Export the current state as a plain object (for WS bridge).
+   * Keys starting with `_` are excluded to protect internal data. */
+  exportState(): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of this.state) {
+      if (!key.startsWith("_")) result[key] = value;
+    }
+    return result;
+  }
+
+  /** Import a state snapshot into this context (from WS upgrade). */
+  importState(state: Record<string, unknown>): void {
+    for (const [key, value] of Object.entries(state)) {
+      this.state.set(key, value);
+    }
+  }
+
   /** Update an existing value in the request state. */
-  update<K extends string, T = any>(
-    key: K,
-    updater: (prev: T | undefined) => T,
-  ): T {
+  update<T>(key: string, updater: (prev: T | undefined) => T): T {
     const nextValue = updater(this.get(key));
     this.state.set(key, nextValue);
     return nextValue;
   }
 
   /** Remove a value from the request state. */
-  clear<K extends string>(key: K): boolean {
+  clear(key: string): boolean {
     return this.state.delete(key);
   }
 
@@ -288,7 +372,7 @@ export class Context<T = unknown> {
   }
 
   /** Check if a value exists in the request state. */
-  has<K extends string>(key: K): boolean {
+  has(key: string): boolean {
     return this.state.has(key);
   }
 
@@ -296,41 +380,40 @@ export class Context<T = unknown> {
    * Get a snapshot of the current request state as a readonly object.
    * This is useful for debugging and logging.
    */
-  snapshot(): Readonly<Partial<T>> {
-    return Object.freeze(Object.fromEntries(this.state) as Partial<T>);
+  snapshot(): Readonly<Record<string, unknown>> {
+    return Object.freeze(
+      Object.fromEntries(this.state) as Record<string, unknown>,
+    );
   }
 
   // ─── Global State Management ──────────────────────────────
 
   /** Set a value in the global application state. */
-  setGlobal<K extends string, V>(key: K, value: V): void {
+  setGlobal<V>(key: string, value: V): void {
     this.global.set(key, value);
   }
 
   /** Get a value from the global application state. */
-  getGlobal<K extends string, V = any>(key: K): V | undefined {
+  getGlobal<V>(key: string): V | undefined {
     return this.global.get(key) as V | undefined;
   }
 
   /** Get a value from the global application state and remove it. */
-  getGlobalOnce<K extends string, V = any>(key: K): V | undefined {
+  getGlobalOnce<V>(key: string): V | undefined {
     const value = this.global.get(key) as V | undefined;
     this.global.delete(key);
     return value;
   }
 
   /** Update an existing value in the global application state. */
-  updateGlobal<K extends string, V>(
-    key: K,
-    updater: (prev: V | undefined) => V,
-  ): V {
+  updateGlobal<V>(key: string, updater: (prev: V | undefined) => V): V {
     const nextValue = updater(this.getGlobal(key));
     this.global.set(key, nextValue);
     return nextValue;
   }
 
   /** Remove a value from the global application state. */
-  clearGlobal<K extends string>(key: K): boolean {
+  clearGlobal(key: string): boolean {
     return this.global.delete(key);
   }
 
@@ -340,7 +423,7 @@ export class Context<T = unknown> {
   }
 
   /** Check if a value exists in the global application state. */
-  hasGlobal<K extends string>(key: K): boolean {
+  hasGlobal(key: string): boolean {
     return this.global.has(key);
   }
 
@@ -348,8 +431,10 @@ export class Context<T = unknown> {
    * Get all global state as readonly object.
    * This is useful for debugging and logging.
    */
-  snapshotGlobal(): Readonly<Partial<T>> {
-    return Object.freeze(Object.fromEntries(this.global) as Partial<T>);
+  snapshotGlobal(): Readonly<Record<string, unknown>> {
+    return Object.freeze(
+      Object.fromEntries(this.global) as Record<string, unknown>,
+    );
   }
 
   // ─── Response Methods ───────────────────────────────────
@@ -360,13 +445,8 @@ export class Context<T = unknown> {
    */
   json(data: unknown, status?: number): void {
     this.guardDoubleResponse();
-    // Pre-serialize JSON so buildResponse() hits the string fast-path
-    this.commitResponse(
-      "json",
-      JSON.stringify(data),
-      status,
-      "application/json",
-    );
+    // Store raw object; buildResponse() will use Response.json() for native serialization
+    this.commitResponse("json", data, status, "application/json");
   }
 
   /**
@@ -395,44 +475,6 @@ export class Context<T = unknown> {
     this.guardDoubleResponse();
 
     this.commitResponse("text", html, status, "text/html; charset=UTF-8");
-  }
-
-  /**
-   * Render a registered Sinwan page with data.
-   */
-  async render<D extends object = {}>(
-    name: string,
-    page: SinwanComponent<D>,
-    data: D,
-    status: number = 200,
-  ): Promise<void> {
-    registerPage(name, page);
-    const hasPage = getPage(name);
-    if (!hasPage) {
-      throw new Error(`Page "${name}" not found in registry`);
-    }
-
-    const html = await renderPage(name, data);
-
-    this.html(html, status);
-  }
-
-  /**
-   * Stream a registered Sinwan page as HTML response.
-   */
-  streamRender<D extends object = {}>(
-    name: string,
-    page: SinwanComponent<D>,
-    data: D,
-    status: number = 200,
-  ): void {
-    registerPage(name, page);
-    const hasPage = getPage<D>(name);
-    if (!hasPage) {
-      throw new Error(`Page "${name}" not found in registry`);
-    }
-    const stream = streamPage(page, data);
-    this.stream(stream, status, "text/html; charset=UTF-8");
   }
 
   /**
@@ -485,8 +527,6 @@ export class Context<T = unknown> {
 
     const dataKey = url.searchParams.get(keyParam);
 
-    console.log(dataKey);
-
     if (!dataKey) {
       return undefined;
     }
@@ -496,7 +536,7 @@ export class Context<T = unknown> {
       return undefined;
     }
 
-    return this.getGlobalOnce<string, V>(dataKey);
+    return this.getGlobalOnce<V>(dataKey);
   }
 
   /**
@@ -512,11 +552,12 @@ export class Context<T = unknown> {
     // Mark as streaming to prevent premature pool reuse
     this._status |= Context.STREAMING;
 
-    // Pipe through a passthrough TransformStream.
-    const passthrough = new TransformStream();
-    readable.pipeTo(passthrough.writable).finally(() => this.dispose());
-
-    this.commitResponse("stream", passthrough.readable, status, contentType);
+    this.commitResponse(
+      "stream",
+      this.wrapStreamWithDisposal(readable),
+      status,
+      contentType,
+    );
   }
 
   /**
@@ -705,64 +746,64 @@ export class Context<T = unknown> {
   /**
    * Get the data associated with this WebSocket.
    */
-  get data(): T {
-    return this.getWebSocket().data.data as T;
+  wsData<T>(): T | undefined {
+    return this._sockets.wsData<T>();
   }
 
   /**
    * Get the path of this WebSocket.
    */
   get path(): string {
-    return this.getWebSocket().data.path;
+    return this._sockets.path;
   }
 
   /**
    * Get the remote address of this WebSocket.
    */
   get remoteAddress(): string {
-    return this.getWebSocket().remoteAddress;
+    return this._sockets.remoteAddress;
   }
 
   /**
    * Get the ready state of this WebSocket.
    */
   get readyState(): number {
-    return this.getWebSocket().readyState;
+    return this._sockets.readyState;
   }
 
   /**
    * Get the subscriptions of this WebSocket.
    */
   get subscriptions(): string[] {
-    return this.getWebSocket().subscriptions;
+    return this._sockets.subscriptions;
   }
 
   /**
    * Send a message to this WebSocket.
    */
   send(message: string | ArrayBuffer | Uint8Array, compress?: boolean): number {
-    return this.getWebSocket().send(message, compress);
+    return this._sockets.send(message, compress);
   }
 
   /**
    * Close this WebSocket.
    */
   close(code?: number, reason?: string): void {
-    this.getWebSocket().close(code, reason);
+    this._sockets.close(code, reason);
   }
 
   /**
    * Subscribe to a topic [webSocket].
    */
   subscribe(topic: string): void {
-    this.getWebSocket().subscribe(topic);
+    this._sockets.subscribe(topic);
   }
 
   /**
    * Unsubscribe from a topic [webSocket].
    */
   unsubscribe(topic: string): void {
-    this.getWebSocket().unsubscribe(topic);
+    this._sockets.unsubscribe(topic);
   }
 
   /**
@@ -773,21 +814,21 @@ export class Context<T = unknown> {
     message: string | ArrayBuffer | Uint8Array,
     compress?: boolean,
   ): number {
-    return this.getWebSocket().publish(topic, message, compress);
+    return this._sockets.publish(topic, message, compress);
   }
 
   /**
    * Check if this WebSocket is subscribed to a topic [webSocket].
    */
   isSubscribed(topic: string): boolean {
-    return this.getWebSocket().isSubscribed(topic);
+    return this._sockets.isSubscribed(topic);
   }
 
   /**
    * Cork this WebSocket.
    */
-  cork(cb: (ctx: Context<T>) => void): void {
-    this.getWebSocket().cork(() => cb(this));
+  cork(cb: (ctx: Context) => void): void {
+    this._sockets.cork(cb);
   }
 
   // TCP Socket Methods
@@ -795,29 +836,29 @@ export class Context<T = unknown> {
   /**
    * Get the data associated with this TCP socket.
    */
-  get tcpData(): T {
-    return this.getTCPSocket().data.data as T;
+  tcpData<T>(): T | undefined {
+    return this._sockets.tcpData<T>();
   }
 
   /**
    * Get the name of this TCP socket.
    */
   get tcpName(): string {
-    return this.getTCPSocket().data.name;
+    return this._sockets.tcpName;
   }
 
   /**
    * Get the remote address of this TCP socket.
    */
   get tcpRemoteAddress(): string {
-    return this.getTCPSocket().remoteAddress;
+    return this._sockets.tcpRemoteAddress;
   }
 
   /**
    * Get the local address of this TCP socket.
    */
   get tcpLocalAddress(): string {
-    return this.getTCPSocket().localAddress;
+    return this._sockets.tcpLocalAddress;
   }
 
   /**
@@ -828,7 +869,7 @@ export class Context<T = unknown> {
     byteOffset?: number,
     byteLength?: number,
   ): number {
-    return this.getTCPSocket().write(data, byteOffset, byteLength);
+    return this._sockets.write(data, byteOffset, byteLength);
   }
 
   /**
@@ -839,21 +880,21 @@ export class Context<T = unknown> {
     byteOffset?: number,
     byteLength?: number,
   ): number {
-    return this.getTCPSocket().end(data, byteOffset, byteLength);
+    return this._sockets.end(data, byteOffset, byteLength);
   }
 
   /**
    * Flush this TCP socket.
    */
   flush(): void {
-    this.getTCPSocket().flush();
+    this._sockets.flush();
   }
 
   /**
    * Set the timeout for this TCP socket.
    */
   timeout(seconds: number): void {
-    this.getTCPSocket().timeout(seconds);
+    this._sockets.timeout(seconds);
   }
 
   // UDP Socket Methods
@@ -861,52 +902,49 @@ export class Context<T = unknown> {
   /**
    * Get the data associated with this UDP socket.
    */
-  get udpData(): T {
-    return this.getUDPSocket().data.data as T;
+  udpData<T>(): T | undefined {
+    return this._sockets.udpData<T>();
   }
 
   /**
    * Get the name of this UDP socket.
    */
   get udpName(): string {
-    return this.getUDPSocket().data.name;
+    return this._sockets.udpName;
   }
 
   /**
    * Get the address of this UDP socket.
    */
   get udpAddress(): import("bun").SocketAddress {
-    return this.getUDPSocket().address;
+    return this._sockets.udpAddress;
   }
 
   /**
    * Check if this UDP socket is closed.
    */
   get udpClosed(): boolean {
-    return this.getUDPSocket().closed;
+    return this._sockets.udpClosed;
   }
 
   /**
    * Send data to a UDP socket.
    */
   sendUDP(
-    data: Parameters<SinwanUDPSocket<any>["send"]>[0],
+    data: Parameters<SinwanUDPSocket<unknown>["send"]>[0],
     port?: number,
     address?: string,
   ): boolean {
-    if (port !== undefined && address !== undefined) {
-      return this.getUDPSocket().send(data, port, address);
-    }
-    return this.getUDPSocket().send(data);
+    return this._sockets.sendUDP(data, port, address);
   }
 
   /**
    * Send multiple packets to a UDP socket.
    */
   sendManyUDP(
-    packets: Parameters<SinwanUDPSocket<any>["sendMany"]>[0],
+    packets: Parameters<SinwanUDPSocket<unknown>["sendMany"]>[0],
   ): number {
-    return this.getUDPSocket().sendMany(packets);
+    return this._sockets.sendManyUDP(packets);
   }
 
   /**
@@ -916,10 +954,7 @@ export class Context<T = unknown> {
     multicastAddress: string,
     interfaceAddress?: string,
   ): boolean {
-    return this.getUDPSocket().addMembership(
-      multicastAddress,
-      interfaceAddress,
-    );
+    return this._sockets.addMembershipUDP(multicastAddress, interfaceAddress);
   }
 
   /**
@@ -929,16 +964,14 @@ export class Context<T = unknown> {
     multicastAddress: string,
     interfaceAddress?: string,
   ): boolean {
-    return this.getUDPSocket().dropMembership(
-      multicastAddress,
-      interfaceAddress,
-    );
+    return this._sockets.dropMembershipUDP(multicastAddress, interfaceAddress);
   }
 
   // ─── Private Internal Methods ───────────────────────────
 
   /**
-   * Commits the response state. Sets body, status, headers and marks as responded.
+   * Commits the response state. Sets body, status, headers, marks as responded,
+   * and stops step execution so the pipeline halts after the current step.
    * Centralized to ensure consistent event emission and state management.
    */
   private commitResponse<T = any>(
@@ -955,6 +988,7 @@ export class Context<T = unknown> {
     }
 
     this._status |= Context.RESPONDED;
+    this.stop();
 
     // Hot-path: only build payload and emit when someone is listening
     if (this._bus && this._bus.hasListeners("response:set")) {
@@ -1505,27 +1539,6 @@ export class Context<T = unknown> {
     return this.server;
   }
 
-  private getWebSocket(): ServerWebSocket<WSSData> {
-    if (!this.ws) {
-      throw new Error("Context is not attached to a WebSocket.");
-    }
-    return this.ws;
-  }
-
-  private getTCPSocket(): Socket<TCPData> {
-    if (!this.tcp) {
-      throw new Error("Context is not attached to a TCP socket.");
-    }
-    return this.tcp;
-  }
-
-  private getUDPSocket(): SinwanUDPSocket<UDPData> {
-    if (!this.udp) {
-      throw new Error("Context is not attached to a UDP socket.");
-    }
-    return this.udp;
-  }
-
   private withSource(options?: EmitOptions): EmitOptions {
     return {
       ...options,
@@ -1670,5 +1683,52 @@ export class Context<T = unknown> {
         } as AsyncGenerator<any, void, unknown>;
       },
     };
+  }
+
+  /**
+   * Wrap a ReadableStream with automatic disposal when the stream closes
+   * or is cancelled. Replaces the previous TransformStream passthrough.
+   */
+  private wrapStreamWithDisposal(stream: ReadableStream): ReadableStream {
+    const self = this;
+    const reader = stream.getReader();
+    let pump: (() => void) | null = null;
+
+    return new ReadableStream({
+      start(controller) {
+        pump = () => {
+          reader.read().then(
+            ({ done, value }) => {
+              if (done) {
+                controller.close();
+                queueMicrotask(() => self.dispose());
+                return;
+              }
+              controller.enqueue(value);
+              if (
+                controller.desiredSize !== null &&
+                controller.desiredSize <= 0
+              ) {
+                // Consumer applying backpressure — wait for pull()
+                return;
+              }
+              if (pump) pump();
+            },
+            (err) => {
+              controller.error(err);
+              queueMicrotask(() => self.dispose());
+            },
+          );
+        };
+        if (pump) pump();
+      },
+      pull() {
+        if (pump) pump();
+      },
+      cancel() {
+        reader.cancel().catch(() => {});
+        queueMicrotask(() => self.dispose());
+      },
+    });
   }
 }

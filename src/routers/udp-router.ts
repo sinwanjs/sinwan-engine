@@ -1,27 +1,24 @@
- import type { udp } from "bun";
-import type { Context, UDPData } from "./context";
-import type { Runtime } from "./runtime";
+import type { udp } from "bun";
+import type { Context, UDPData } from "../context/context";
+import type { Runtime } from "../runtime";
 
-export type UDPHook<T = unknown> = (ctx: Context<T>) => Promise<void> | void;
+export type UDPHook = (ctx: Context) => Promise<void> | void;
 
-export type UDPDataHook<T = unknown> = (
-  ctx: Context<T>,
+export type UDPDataHook = (
+  ctx: Context,
   data: Buffer,
   port: number,
   addr: string,
 ) => Promise<void> | void;
 
-export type UDPErrorHook<T = unknown> = (
-  ctx: Context<T>,
-  error: Error,
-) => Promise<void> | void;
+export type UDPErrorHook = (ctx: Context, error: Error) => Promise<void> | void;
 
-export interface UDPRouteConfig<T = unknown> {
-  open?: UDPHook<T>;
-  data?: UDPDataHook<T>;
-  drain?: UDPHook<T>;
-  error?: UDPErrorHook<T>;
-  close?: UDPHook<T>;
+export interface UDPRouteConfig {
+  open?: UDPHook;
+  data?: UDPDataHook;
+  drain?: UDPHook;
+  error?: UDPErrorHook;
+  close?: UDPHook;
 }
 
 export interface UDPListenOptions<T = unknown> {
@@ -53,10 +50,10 @@ export type SinwanUDPSocket<T = unknown> = udp.BaseUDPSocket & {
 
 export class UDPRouter {
   public readonly name = "sinwan:udp-router";
-  private readonly routes = new Map<string, UDPRouteConfig<any>>();
+  private readonly routes = new Map<string, UDPRouteConfig>();
   private readonly sockets: SinwanUDPSocket<any>[] = [];
 
-  udp<T = unknown>(name: string, config: UDPRouteConfig<T>): void {
+  udp(name: string, config: UDPRouteConfig): void {
     this.routes.set(name, config);
   }
 
@@ -93,10 +90,23 @@ export class UDPRouter {
           );
         },
         drain: () => {
-          this.runUDPHook(runtime, socketRef, "udp:drain", { name }, config.drain);
+          this.runUDPHook(
+            runtime,
+            socketRef,
+            "udp:drain",
+            { name },
+            config.drain,
+          );
         },
         error: (s, error) => {
-          this.runUDPHook(runtime, socketRef, "udp:error", { name, error }, config.error, error);
+          this.runUDPHook(
+            runtime,
+            socketRef,
+            "udp:error",
+            { name, error },
+            config.error,
+            error,
+          );
         },
       },
     });
@@ -142,10 +152,23 @@ export class UDPRouter {
           );
         },
         drain: () => {
-          this.runUDPHook(runtime, socketRef, "udp:drain", { name }, config.drain);
+          this.runUDPHook(
+            runtime,
+            socketRef,
+            "udp:drain",
+            { name },
+            config.drain,
+          );
         },
         error: (s, error) => {
-          this.runUDPHook(runtime, socketRef, "udp:error", { name, error }, config.error, error);
+          this.runUDPHook(
+            runtime,
+            socketRef,
+            "udp:error",
+            { name, error },
+            config.error,
+            error,
+          );
         },
       },
     });
@@ -159,15 +182,18 @@ export class UDPRouter {
     return socketRef;
   }
 
-  stop(): void {
+  stop(runtime: Runtime): void {
     for (let i = 0; i < this.sockets.length; i += 1) {
       const socket = this.sockets[i];
       if (socket && !socket.closed) {
-        // Since Bun's udp socket does not emit a close event, 
-        // we can trigger the close hook manually here if desired,
-        // or let the user handle it. We will trigger it here.
-        // But doing so requires access to runtime. 
-        // For now, we just close the socket.
+        const config = this.routes.get(socket.data.name);
+        this.runUDPHook(
+          runtime,
+          socket,
+          "udp:close",
+          { name: socket.data.name },
+          config?.close,
+        );
         socket.close();
       }
     }
@@ -183,7 +209,7 @@ export class UDPRouter {
     socket: SinwanUDPSocket<any>,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context<any>, ...args: any[]) => Promise<void> | void,
+    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
     ...args: any[]
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;

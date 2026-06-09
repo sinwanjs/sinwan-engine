@@ -6,7 +6,7 @@ out
 dist
 *.tgz
 
-testapp
+.test
 examples
 # code coverage
 coverage

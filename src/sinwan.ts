@@ -6,45 +6,52 @@ import {
   type ErrorHook,
 } from "./error-handler";
 import { Runtime } from "./runtime";
-import { Router, type RouteHandler } from "./router";
-import { WSRouter, type WSRouteConfig, type WSOptions } from "./ws-router";
+import { HTTPRouter, type RouteHandler } from "./routers/http-router";
+import {
+  WSRouter,
+  type WSRouteConfig,
+  type WSOptions,
+} from "./routers/ws-router";
 import {
   TCPRouter,
   type TCPClientConfig,
   type TCPConnectOptions,
+  type TCPHook,
   type TCPListenOptions,
   type TCPRouteConfig,
-} from "./tcp-router";
+} from "./routers/tcp-router";
 import {
   UDPRouter,
   type UDPConnectOptions,
+  type UDPHook,
   type UDPListenOptions,
   type UDPRouteConfig,
-} from "./udp-router";
+} from "./routers/udp-router";
+import {
+  GRPCRouter,
+  type GRPCHook,
+  type GRPCErrorHook,
+  type GRPCAfterHook,
+  type GRPCListenOptions,
+  type GRPCRouterDefaults,
+  type GRPCServerHandle,
+  type GRPCServiceConfig,
+} from "./routers/grpc-router/server";
+import {
+  GRPCClient,
+  type GRPCClientConfig,
+} from "./routers/grpc-router/client";
 import { LifecycleManager } from "./lifecycle-manager";
-import type { Context } from "./context";
 import type {
   Server,
   Socket,
   TCPSocketListener,
   UnixSocketListener,
 } from "bun";
-import type { Request } from "./types";
-
-/**
- * Minimal lifecycle context for app-level events.
- * Provides only what lifecycle events need, avoiding fake Context construction.
- * Uses type assertion since lifecycle events only need requestId and isStopped.
- */
-function createLifecycleContext(): Context {
-  return {
-    requestId: "lifecycle",
-    isStopped: () => false,
-    recordEvent: () => {},
-    hasResponded: () => false,
-    isStreaming: () => false,
-  } as unknown as Context;
-}
+import type { Plugin, Request, Step } from "./types";
+import { LifecycleState } from "./types";
+import type { SinwanModule } from "./modules";
+import type { Context } from "./context/context";
 
 export interface SinwanOptions {
   idleTimeout?: number;
@@ -54,39 +61,41 @@ export interface SinwanOptions {
   websocket?: WSOptions;
   /** Error handler options. */
   error?: ErrorHandlerOptions;
+  /** gRPC router defaults (loader, credentials, server options, hooks). */
+  grpc?: GRPCRouterDefaults;
 }
 
 export class Sinwan {
-  /** Step Engine: Executes steps in order.*/
-  /** Each step is a function that takes the context and returns a Promise.*/
-  public readonly engine: StepEngine;
+  /** Lifecycle Manager: Manages the application lifecycle.*/
+  public readonly lifecycle: LifecycleManager = new LifecycleManager();
 
   /** Event Bus: Handles events for the application.*/
   public readonly bus: EventBus;
 
+  /** Step Engine: Executes steps in order.*/
+  /** Each step is a function that takes the context and returns a Promise.*/
+  private readonly engine: StepEngine;
+
   /** Router: Handles routing for the application.*/
-  public readonly router: Router;
+  private readonly httpRouter: HTTPRouter;
 
   /** WS Router: Handles WebSocket route registration and upgrade dispatch.*/
-  public readonly wsRouter: WSRouter;
+  private readonly wsRouter: WSRouter;
 
   /** TCP Router: Handles TCP route registration and Bun TCP server dispatch.*/
-  public readonly tcpRouter: TCPRouter;
+  private readonly tcpRouter: TCPRouter;
 
   /** UDP Router: Handles UDP route registration and socket dispatch.*/
-  public readonly udpRouter: UDPRouter;
+  private readonly udpRouter: UDPRouter;
+
+  /** gRPC Router: Handles proto-backed gRPC service registration and dispatch.*/
+  private readonly grpcRouter: GRPCRouter;
 
   /** Runtime: Handles the runtime for the application.*/
-  public readonly runtime: Runtime;
+  private readonly runtime: Runtime;
 
   /** Error Handler: Handles errors for the application.*/
-  public readonly errorHandler: ErrorHandler;
-
-  /** Lifecycle Manager: Manages the application lifecycle.*/
-  private readonly lifecycle: LifecycleManager;
-
-  /** Lifecycle Context: Context for lifecycle events.*/
-  private readonly lifecycleCtx: Context;
+  private readonly errorHandler: ErrorHandler;
 
   /** Shared State: Manages the shared state for the application.*/
   private readonly sharedState = new Map<string, any>();
@@ -97,8 +106,18 @@ export class Sinwan {
   /** Server: Manages the server for the application.*/
   private server?: Server<any>;
 
+  /** HTTP Router Installed: Tracks if the HTTP router has been installed.*/
+  private httpRouterInstalled = false;
+
   /**
    * Create a new SinwanJS application.
+   *
+   * The constructor is **fully synchronous** — it only allocates memory and
+   * wires up internal systems.  No I/O, no async work, no thrown exceptions.
+   *
+   * If you need to run async setup hooks (plugins, DB connections, etc.),
+   * use the {@link Sinwan.create} factory instead.
+   *
    * @param options Configuration options for the application.
    * @param options.idleTimeout Optional idle timeout in milliseconds.
    * @param options.maxPoolSize Maximum context pool size (default: 1000).
@@ -109,9 +128,11 @@ export class Sinwan {
     this.engine = new StepEngine();
     this.bus = new EventBus();
     this.errorHandler = new ErrorHandler(options.error ?? {});
-    this.router = new Router();
-
-    this.lifecycleCtx = createLifecycleContext();
+    this.httpRouter = new HTTPRouter();
+    this.wsRouter = new WSRouter();
+    this.tcpRouter = new TCPRouter();
+    this.udpRouter = new UDPRouter();
+    this.grpcRouter = new GRPCRouter(options.grpc);
 
     this.runtime = new Runtime({
       engine: this.engine,
@@ -121,137 +142,456 @@ export class Sinwan {
       maxPoolSize: options.maxPoolSize,
     });
 
-    this.lifecycle = new LifecycleManager(this.bus, this.lifecycleCtx);
-
-    this.runtime.use(this.router);
-
-    this.wsRouter = new WSRouter();
     if (options.websocket) {
       this.wsRouter.setOptions(options.websocket);
     }
-    this.tcpRouter = new TCPRouter();
-    this.udpRouter = new UDPRouter();
+  }
+
+  /**
+   * Install one or more plugins.
+   *
+   * ```ts
+   * app
+   *   .install(loggerPlugin)
+   *   .install(authPlugin, corsPlugin, rateLimitPlugin)
+   *   .install({
+   *     name: "hello",
+   *     install(rt) { rt.bus.on("init", () => console.log("Hello!")); }
+   *   });
+   * ```
+   *
+   * @param plugins One or more Plugin instances.
+   * @returns `this` for fluent chaining.
+   */
+  install(...plugins: Plugin[]): this {
+    for (const plugin of plugins) {
+      if (!plugin || typeof plugin !== "object") {
+        throw new TypeError(
+          `[Sinwan.install] Expected a Plugin object, got ${typeof plugin}.`,
+        );
+      }
+      if (typeof plugin.name !== "string" || !plugin.name) {
+        throw new TypeError(
+          `[Sinwan.install] Plugin must have a non-empty string "name".`,
+        );
+      }
+      if (typeof plugin.install !== "function") {
+        throw new TypeError(
+          `[Sinwan.install] Plugin "${plugin.name}" must have an "install(rt: Runtime)" method.`,
+        );
+      }
+      this.runtime.use(plugin);
+    }
+    return this;
+  }
+
+  /**
+   * Add a middleware step to the request pipeline.
+   *
+   * **Named step (explicit):**
+   * ```ts
+   * app.add("auth", async (ctx, bus) => {
+   *   const token = ctx.req.headers.get("authorization");
+   *   if (!token) return { type: "stop" };
+   *   ctx.set("user", await verify(token));
+   * });
+   * ```
+   *
+   * **Full Step object:**
+   * ```ts
+   * app.add({
+   *   name: "cors",
+   *   async run(ctx) {
+   *     ctx.res.headers.set("Access-Control-Allow-Origin", "*");
+   *   },
+   * });
+   * ```
+   *
+   * Steps execute in registration order. Duplicate names throw.
+   *
+   * @returns `this` for fluent chaining.
+   */
+  add(step: Step): this;
+  add(name: string, run: Step["run"]): this;
+  add(stepOrName: Step | string, run?: Step["run"]): this {
+    if (typeof stepOrName === "string") {
+      if (!stepOrName) {
+        throw new TypeError(`[Sinwan.add] Step name cannot be empty.`);
+      }
+      if (typeof run !== "function") {
+        throw new TypeError(
+          `[Sinwan.add] Second argument must be a function for step "${stepOrName}".`,
+        );
+      }
+      this.engine.add({ name: stepOrName, run });
+    } else {
+      if (!stepOrName || typeof stepOrName !== "object") {
+        throw new TypeError(`[Sinwan.add] Expected a Step object.`);
+      }
+      if (typeof stepOrName.name !== "string" || !stepOrName.name) {
+        throw new TypeError(
+          `[Sinwan.add] Step must have a non-empty string "name".`,
+        );
+      }
+      if (typeof stepOrName.run !== "function") {
+        throw new TypeError(
+          `[Sinwan.add] Step "${stepOrName.name}" must have a "run" method.`,
+        );
+      }
+      this.engine.add(stepOrName);
+    }
+    return this;
+  }
+
+  /**
+   * Register one or more protocol modules (HTTP, WS, TCP, UDP, gRPC).
+   *
+   * ```ts
+   * import { createHttpModule, createWSModule } from "./modules";
+   *
+   * const apiModule = createHttpModule({
+   *   prefix: "/api",
+   *   routes: (app) => {
+   *     app.get("/users", listUsers);
+   *   },
+   * });
+   *
+   * const chatModule = createWSModule({
+   *   path: "/chat",
+   *   config: { open(ws) { ws.subscribe("room:1"); } },
+   * });
+   *
+   * app.register(apiModule, chatModule);
+   * ```
+   *
+   * @returns `this` for fluent chaining.
+   */
+  register(...modules: SinwanModule[]): this {
+    for (const mod of modules) {
+      if (!mod || typeof mod !== "object") {
+        throw new TypeError(
+          `[Sinwan.register] Expected a module object, got ${typeof mod}.`,
+        );
+      }
+      if (typeof mod.name !== "string" || !mod.name) {
+        throw new TypeError(
+          `[Sinwan.register] Module must have a non-empty string "name".`,
+        );
+      }
+      if (typeof mod.register !== "function") {
+        throw new TypeError(
+          `[Sinwan.register] Module "${mod.name}" must have a "register(app)" method.`,
+        );
+      }
+      mod.register(this);
+    }
+    return this;
+  }
+
+  /**
+   * Factory that creates a Sinwan app **and** runs the async `init` lifecycle.
+   *
+   * ```ts
+   * const app = await Sinwan.create({
+   *   maxPoolSize: 500,
+   *   error: { responseType: "json" },
+   * });
+   *
+   * app.get("/", (ctx) => ctx.json({ hello: "world" }));
+   * app.listen(3000);
+   * ```
+   *
+   * @param options Same options as the constructor.
+   * @returns A ready-to-use Sinwan instance.
+   */
+  static async create(options: SinwanOptions = {}): Promise<Sinwan> {
+    const app = new Sinwan(options);
+    if (app.lifecycle.getState() === LifecycleState.IDLE) {
+      await app.lifecycle.init({ options });
+    }
+    return app;
   }
 
   /**
    * Register a GET route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   *
+   * ```ts
+   * app
+   *   .get("/", (ctx) => ctx.json({ hello: "world" }))
+   *   .get("/users/:id", (ctx) => ctx.json({ id: ctx.params.id }));
+   * ```
+   *
+   * @returns `this` for fluent chaining.
    */
-  get(path: string, ...handlers: RouteHandler[]) {
-    this.router.get(path, ...handlers);
+  get(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("GET", path, handlers);
+    this.httpRouter.get(path, ...handlers);
+    return this;
   }
+
   /**
    * Register a POST route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   *
+   * ```ts
+   * app.post("/users", async (ctx) => {
+   *   const body = await ctx.req.json();
+   *   ctx.json({ created: body });
+   * });
+   * ```
+   *
+   * @returns `this` for fluent chaining.
    */
-  post(path: string, ...handlers: RouteHandler[]) {
-    this.router.post(path, ...handlers);
+  post(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("POST", path, handlers);
+    this.httpRouter.post(path, ...handlers);
+    return this;
   }
+
   /**
    * Register a PUT route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   * @returns `this` for fluent chaining.
    */
-  put(path: string, ...handlers: RouteHandler[]) {
-    this.router.put(path, ...handlers);
+  put(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("PUT", path, handlers);
+    this.httpRouter.put(path, ...handlers);
+    return this;
   }
+
   /**
    * Register a PATCH route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   * @returns `this` for fluent chaining.
    */
-  patch(path: string, ...handlers: RouteHandler[]) {
-    this.router.patch(path, ...handlers);
+  patch(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("PATCH", path, handlers);
+    this.httpRouter.patch(path, ...handlers);
+    return this;
   }
 
   /**
    * Register a DELETE route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   * @returns `this` for fluent chaining.
    */
-  delete(path: string, ...handlers: RouteHandler[]) {
-    this.router.delete(path, ...handlers);
+  delete(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("DELETE", path, handlers);
+    this.httpRouter.delete(path, ...handlers);
+    return this;
   }
 
   /**
    * Register an OPTIONS route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   * @returns `this` for fluent chaining.
    */
-  options(path: string, ...handlers: RouteHandler[]) {
-    this.router.options(path, ...handlers);
-  }
-  /**
-   * Register a HEAD route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
-   */
-  head(path: string, ...handlers: RouteHandler[]) {
-    this.router.head(path, ...handlers);
+  options(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("OPTIONS", path, handlers);
+    this.httpRouter.options(path, ...handlers);
+    return this;
   }
 
   /**
-   * Register an ALL route handler.
-   * @param path The URL path pattern.
-   * @param handlers The route handlers to register.
+   * Register a HEAD route handler.
+   * @returns `this` for fluent chaining.
    */
-  all(path: string, ...handlers: RouteHandler[]) {
-    this.router.all(path, ...handlers);
+  head(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("HEAD", path, handlers);
+    this.httpRouter.head(path, ...handlers);
+    return this;
+  }
+
+  /**
+   * Register a catch-all route for every HTTP method.
+   *
+   * ```ts
+   * app.all("/health", (ctx) => ctx.json({ status: "ok" }));
+   * ```
+   *
+   * @returns `this` for fluent chaining.
+   */
+  all(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("ALL", path, handlers);
+    this.httpRouter.all(path, ...handlers);
+    return this;
   }
 
   /**
    * Register a WebSocket route.
-   * @param path The URL path to match for the upgrade request.
-   * @param config Lifecycle hooks: upgrade, open, message, close, drain, error.
    *
-   * @example
-   * app.ws<{ userId: string }>('/chat', {
+   * ```ts
+   * app.ws<{ userId: string }>("/chat", {
    *   upgrade(ctx) {
-   *     ctx.set('ws:data', { userId: ctx.req.headers.get('x-user-id') });
+   *     ctx.set("ws:data", { userId: ctx.req.headers.get("x-user-id") });
    *   },
-   *   open(ws) { ws.subscribe('room:1'); },
-   *   message(ws, msg) { ws.publish('room:1', msg); },
-   *   close(ws) { ws.unsubscribe('room:1'); },
+   *   open(ws) { ws.subscribe("room:1"); },
+   *   message(ws, msg) { ws.publish("room:1", msg); },
+   *   close(ws) { ws.unsubscribe("room:1"); },
    * });
+   * ```
+   *
+   * @returns `this` for fluent chaining.
    */
-  ws<T = unknown>(path: string, config: WSRouteConfig<T>): void {
+  ws(path: string, config: WSRouteConfig): this {
+    if (!path || typeof path !== "string") {
+      throw new TypeError(`[Sinwan.ws] Path must be a non-empty string.`);
+    }
     this.wsRouter.ws(path, config);
-  }
-
-  tcp<T = unknown>(name: string, config: TCPRouteConfig<T>): void {
-    this.tcpRouter.tcp(name, config);
-  }
-
-  udp<T = unknown>(name: string, config: UDPRouteConfig<T>): void {
-    this.udpRouter.udp(name, config);
+    return this;
   }
 
   /**
-   * Register a route handler for all HTTP methods.
-   * @param handlers The route handlers to register.
+   * Register a TCP route.
+   * @returns `this` for fluent chaining.
    */
-  use(...handlers: RouteHandler[]) {
-    this.router.use(...handlers);
+  tcp(name: string, config: TCPRouteConfig): this {
+    if (!name || typeof name !== "string") {
+      throw new TypeError(`[Sinwan.tcp] Name must be a non-empty string.`);
+    }
+    this.tcpRouter.tcp(name, config);
+    return this;
+  }
+
+  /**
+   * Register a UDP route.
+   * @returns `this` for fluent chaining.
+   */
+  udp(name: string, config: UDPRouteConfig): this {
+    if (!name || typeof name !== "string") {
+      throw new TypeError(`[Sinwan.udp] Name must be a non-empty string.`);
+    }
+    this.udpRouter.udp(name, config);
+    return this;
+  }
+
+  /**
+   * Register a gRPC service route.
+   *
+   * ```ts
+   * app.grpc("greeter", {
+   *   proto: "./proto/greeter.proto",
+   *   package: "hello.v1",
+   *   service: "Greeter",
+   *   methods: {
+   *     SayHello: (ctx, request) => ({ message: `Hello ${request.name}` }),
+   *   },
+   * });
+   *
+   * await app.listenGRPC({ port: 50051 });
+   * ```
+   *
+   * @returns `this` for fluent chaining.
+   */
+  grpc(name: string, config: GRPCServiceConfig): this {
+    if (!name || typeof name !== "string") {
+      throw new TypeError(`[Sinwan.grpc] Name must be a non-empty string.`);
+    }
+    this.grpcRouter.grpc(name, config);
+    return this;
+  }
+
+  /**
+   * Register a middleware hook for TCP events.
+   * Runs before the route's own handler.
+   * @returns `this` for fluent chaining.
+   */
+  beforeTCP(
+    event: "open" | "data" | "close" | "drain" | "error",
+    handler: TCPHook,
+  ): this {
+    this.bus.on(`tcp:${event}`, handler as any);
+    return this;
+  }
+
+  /**
+   * Register a middleware hook for UDP events.
+   * Runs before the route's own handler.
+   * @returns `this` for fluent chaining.
+   */
+  beforeUDP(
+    event: "open" | "data" | "drain" | "error" | "close",
+    handler: UDPHook,
+  ): this {
+    this.bus.on(`udp:${event}`, handler as any);
+    return this;
+  }
+
+  /**
+   * Register a middleware hook for gRPC events.
+   * Runs before the route's own handler for "call" events.
+   * @returns `this` for fluent chaining.
+   */
+  beforeGRPC(event: "call", handler: GRPCHook): this;
+  beforeGRPC(event: "finish", handler: GRPCAfterHook): this;
+  beforeGRPC(event: "error", handler: GRPCErrorHook): this;
+  beforeGRPC(
+    event: "call" | "finish" | "error",
+    handler: GRPCHook | GRPCAfterHook | GRPCErrorHook,
+  ): this {
+    if (event === "error") {
+      this.bus.on("grpc:error", (ctx, payload: any) =>
+        (handler as GRPCErrorHook)(ctx, payload?.error, payload),
+      );
+      return this;
+    }
+
+    this.bus.on(`grpc:${event}`, handler as any);
+    return this;
+  }
+
+  /**
+   * Register global middleware for all HTTP methods.
+   *
+   * ```ts
+   * app.use((ctx) => {
+   *   ctx.res.headers.set("X-Request-Id", crypto.randomUUID());
+   * });
+   * ```
+   *
+   * @returns `this` for fluent chaining.
+   */
+  use(...handlers: RouteHandler[]): this {
+    if (handlers.length === 0) {
+      throw new TypeError(`[Sinwan.use] At least one handler is required.`);
+    }
+    this.httpRouter.use(...handlers);
+    return this;
   }
 
   /**
    * Create a route group with a common prefix.
-   * @param prefix The prefix for the routes in the group.
-   * @param callback The callback function to register the routes.
+   *
+   * ```ts
+   * app.group("/api/v1", (r) => {
+   *     r.get("/users", listUsers)
+   *      .post("/users", createUser)
+   *      .get("/posts", listPosts);
+   *   });
+   * ```
+   *
+   * @returns `this` for fluent chaining.
    */
-  group(prefix: string, callback: (router: Router) => void) {
-    this.router.group(prefix, callback);
+  group(prefix: string, callback: (httpRouter: HTTPRouter) => void): this {
+    if (!prefix || typeof prefix !== "string") {
+      throw new TypeError(`[Sinwan.group] Prefix must be a non-empty string.`);
+    }
+    this.httpRouter.group(prefix, callback);
+    return this;
   }
 
   /**
    * Mount an existing router instance under a prefix.
-   * @param prefix The prefix to mount the router at.
-   * @param router The router instance to mount.
+   *
+   * ```ts
+   * const apiRouter = new HTTPRouter();
+   * apiRouter.get("/users", listUsers);
+   * app.mount("/api", apiRouter);
+   * ```
+   *
+   * @returns `this` for fluent chaining.
    */
-  mount(prefix: string, router: Router) {
-    this.router.mount(prefix, router);
+  mount(prefix: string, httpRouter: HTTPRouter): this {
+    if (!prefix || typeof prefix !== "string") {
+      throw new TypeError(`[Sinwan.mount] Prefix must be a non-empty string.`);
+    }
+    this.httpRouter.mount(prefix, httpRouter);
+    return this;
   }
 
   /**
@@ -272,6 +612,7 @@ export class Sinwan {
       if (init !== undefined) {
         input = new globalThis.Request(input, init);
       }
+      this.ensureHttpRouterInstalled();
       return this.runtime.fetch(input as any, server || ({} as any));
     }
 
@@ -281,6 +622,7 @@ export class Sinwan {
         ? `http://localhost${input}`
         : input.toString();
 
+    this.ensureHttpRouterInstalled();
     return this.runtime.fetch(
       new globalThis.Request(url, init) as any,
       server || ({} as any),
@@ -289,11 +631,24 @@ export class Sinwan {
 
   /**
    * Serve static files from a directory.
+   *
+   * ```ts
+   * app.static("/public", "./public");
+   * ```
+   *
    * @param prefix The URL prefix (e.g. "/public")
    * @param root   The local directory path (e.g. "./public")
+   * @returns `this` for fluent chaining.
    */
-  static(prefix: string, root: string) {
-    this.router.static(prefix, root);
+  static(prefix: string, root: string): this {
+    if (!prefix || typeof prefix !== "string") {
+      throw new TypeError(`[Sinwan.static] Prefix must be a non-empty string.`);
+    }
+    if (!root || typeof root !== "string") {
+      throw new TypeError(`[Sinwan.static] Root must be a non-empty string.`);
+    }
+    this.httpRouter.static(prefix, root);
+    return this;
   }
 
   listenTCP<T = unknown>(
@@ -306,7 +661,7 @@ export class Sinwan {
   connectTCP<T = unknown>(
     name: string,
     options: TCPConnectOptions<T>,
-    config: TCPClientConfig<T>,
+    config: TCPClientConfig,
   ): Promise<Socket<any>> {
     return this.tcpRouter.connect(this.runtime, name, options, config);
   }
@@ -314,39 +669,76 @@ export class Sinwan {
   listenUDP<T = unknown>(
     name: string,
     options: UDPListenOptions<T>,
-  ): Promise<import("./udp-router").SinwanUDPSocket<T>> {
+  ): Promise<import("./routers/udp-router").SinwanUDPSocket<T>> {
     return this.udpRouter.listen(this.runtime, name, options);
   }
 
   connectUDP<T = unknown>(
     name: string,
     options: UDPConnectOptions<T>,
-  ): Promise<import("./udp-router").SinwanUDPSocket<T>> {
+  ): Promise<import("./routers/udp-router").SinwanUDPSocket<T>> {
     return this.udpRouter.connect(this.runtime, name, options);
+  }
+
+  listenGRPC(options?: GRPCListenOptions): Promise<GRPCServerHandle>;
+  listenGRPC(
+    name: string,
+    options?: GRPCListenOptions,
+  ): Promise<GRPCServerHandle>;
+  listenGRPC(
+    nameOrOptions?: string | GRPCListenOptions,
+    options?: GRPCListenOptions,
+  ): Promise<GRPCServerHandle> {
+    if (typeof nameOrOptions === "string") {
+      return this.grpcRouter.listen(this.runtime, nameOrOptions, options);
+    }
+    return this.grpcRouter.listen(this.runtime, nameOrOptions);
+  }
+
+  /**
+   * Create a gRPC client to connect to a remote service.
+   *
+   * ```ts
+   * const client = app.connectGRPC({
+   *   proto: "./proto/greeter.proto",
+   *   package: "hello.v1",
+   *   service: "Greeter",
+   *   address: "localhost:50051",
+   * });
+   * ```
+   */
+  connectGRPC<ServiceShape extends Record<string, any> = Record<string, any>>(
+    config: GRPCClientConfig,
+  ): GRPCClient<ServiceShape> {
+    return GRPCClient.create<ServiceShape>(config);
   }
 
   /**
    * Start the server and listen for incoming requests.
+   *
+   * ```ts
+   * // Basic
+   * await app.listen(3000);
+   *
+   * // With callback
+   * await app.listen(3000, ({ port }) => {
+   *   console.log(`Server live on http://localhost:${port}`);
+   * });
+   * ```
+   *
    * @param port The port number to listen on.
-   * @param callback Optional callback function to execute after the server starts.
+   * @param callback Optional callback invoked after the server starts (receives `{ port, server }`).
    * @returns The Bun server instance.
    * @throws If the server fails to start or lifecycle transition fails.
    */
-  async listen(
+  async listen<WSData = unknown>(
     port: number | string = 3000,
-    callback?: () => void,
-  ): Promise<Server<any>> {
-    // Initialize lifecycle 
-    if (this.lifecycle.getState() === ("idle" as any)) {
-      try {
-        await this.lifecycle.init({ options: this.config });
-      } catch (error) {
-        throw new Error(
-          `Failed to initialize application: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        );
-      }
-    }
+    callback?: (info: {
+      port: number | string;
+      server: Server<WSData>;
+    }) => void,
+  ): Promise<Server<WSData>> {
+    this.ensureHttpRouterInstalled();
 
     // Install ws-upgrade step only when WS routes exist (zero cost otherwise)
     if (this.wsRouter.hasRoutes()) {
@@ -389,9 +781,8 @@ export class Sinwan {
 
     if (callback) {
       try {
-        callback();
+        callback({ port, server: this.server });
       } catch (error) {
-        // Log but don't fail - callback errors shouldn't crash the server
         console.error("[Sinwan] Listen callback error:", error);
       }
     }
@@ -400,17 +791,57 @@ export class Sinwan {
   }
 
   /**
+   * Validate route registration inputs.
+   * @internal
+   */
+  private validateRoute(
+    method: string,
+    path: string,
+    handlers: RouteHandler[],
+  ): void {
+    if (!path || typeof path !== "string") {
+      throw new TypeError(
+        `[Sinwan.${method}] Path must be a non-empty string.`,
+      );
+    }
+    if (handlers.length === 0) {
+      throw new TypeError(
+        `[Sinwan.${method}] At least one handler is required for "${path}".`,
+      );
+    }
+    for (let i = 0; i < handlers.length; i++) {
+      if (typeof handlers[i] !== "function") {
+        throw new TypeError(
+          `[Sinwan.${method}] Handler at index ${i} must be a function.`,
+        );
+      }
+    }
+  }
+
+  private ensureHttpRouterInstalled(): void {
+    if (this.httpRouterInstalled) return;
+    this.runtime.use(this.httpRouter);
+    this.httpRouterInstalled = true;
+  }
+
+  /**
    * Gracefully shut down the server.
    * @param closeConn If true, immediately close all active connections.
    */
   async stop(closeConn: boolean = false): Promise<void> {
-    if (!this.server) return;
+    if (!this.server) {
+      this.tcpRouter.stop(closeConn);
+      this.udpRouter.stop(this.runtime);
+      await this.grpcRouter.stop();
+      return;
+    }
 
     await this.lifecycle.shutdown();
 
     this.server.stop(closeConn);
     this.tcpRouter.stop(closeConn);
-    this.udpRouter.stop();
+    this.udpRouter.stop(this.runtime);
+    await this.grpcRouter.stop();
 
     await this.lifecycle.destroy();
 

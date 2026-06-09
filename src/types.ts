@@ -7,7 +7,7 @@
  */
 
 import type { BunRequest } from "bun";
-import type { Context } from "./context";
+import type { Context } from "./context/context";
 import type { EventBus } from "./event-bus";
 
 // ─── Lifecycle System ─────────────────────────────────────────
@@ -20,11 +20,7 @@ export enum LifecycleState {
   DESTROYED = "destroyed",
 }
 
-export type LifecycleEvent =
-  | "app:init"
-  | "app:ready"
-  | "app:shutdown"
-  | "app:destroy";
+export type LifecycleEvent = "init" | "ready" | "shutdown" | "destroy";
 
 // ─── Step System ────────────────────────────────────────────
 
@@ -145,6 +141,19 @@ export type ResponseKind =
   | "iterator"
   | "unknown";
 
+export interface GRPCCallPayload {
+  name: string;
+  package?: string;
+  service: string;
+  method: string;
+  path: string;
+  kind: "unary" | "serverStream" | "clientStream" | "bidi";
+  request?: unknown;
+  metadata: unknown;
+  peer?: string;
+  data: unknown;
+}
+
 export interface InternalEventPayloads {
   "request:start": { method: string; url: string };
   "request:end": { durationMs: number };
@@ -179,10 +188,6 @@ export interface InternalEventPayloads {
   "body:parse:error": { error: unknown };
   "context:stop": undefined;
   "context:dispose": undefined;
-  "app:init": { options: any };
-  "app:ready": { port: number | string; server: any };
-  "app:shutdown": undefined;
-  "app:destroy": undefined;
   "ws:open": { path: string };
   "ws:message": { path: string; message: string | ArrayBuffer | Uint8Array };
   "ws:close": { path: string; code: number; reason: string };
@@ -198,6 +203,18 @@ export interface InternalEventPayloads {
   "tcp:connectError": { name: string; error: Error };
   "tcp:end": { name: string };
   "tcp:timeout": { name: string };
+  "udp:open": { name: string };
+  "udp:close": { name: string };
+  "udp:data": { name: string; data: Buffer; port: number; addr: string };
+  "udp:drain": { name: string };
+  "udp:error": { name: string; error: Error };
+  "grpc:call": GRPCCallPayload;
+  "grpc:finish": GRPCCallPayload & {
+    durationMs: number;
+  };
+  "grpc:error": GRPCCallPayload & {
+    error: unknown;
+  };
 }
 
 export type InternalEventMap = {

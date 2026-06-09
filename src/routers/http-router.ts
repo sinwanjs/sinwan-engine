@@ -1,14 +1,14 @@
 /**
- * SinwanJS Core Runtime — Router Plugin
+ * SinwanJS Core Runtime — HTTPRouter Plugin
  *
- * Radix-tree router with static fastpath, ALL bucket fallback,
+ * Radix-tree HTTPRouter with static fastpath, ALL bucket fallback,
  * and manual URL parsing for lower overhead.
  */
 
-import type { Context } from "./context";
-import type { Plugin } from "./types";
-import type { Runtime } from "./runtime";
-import path from "node:path";
+import type { Context } from "../context/context";
+import type { Plugin } from "../types";
+import type { Runtime } from "../runtime";
+import * as path from "node:path";
 
 export type RouteHandler = (ctx: Context) => Promise<void> | void;
 
@@ -31,7 +31,7 @@ function isSpecificMethod(method: string): method is SpecificMethod {
   return SPECIFIC_METHODS_SET.has(method);
 }
 
-interface RouteRecord {
+interface HttpRoute {
   method: HttpMethod;
   path: string;
   handlers: RouteHandler[];
@@ -345,13 +345,13 @@ function radixHasAnyMethod(
   return false;
 }
 
-export class Router implements Plugin {
-  public readonly name = "sinwan:router";
+export class HTTPRouter implements Plugin {
+  public readonly name = "sinwan:http-router";
 
   // Used by group() and debug tooling; private but preserved for compatibility.
-  private readonly routes: RouteRecord[] = [];
+  private readonly routes: HttpRoute[] = [];
 
-  // Router-level middleware applied to all routes added AFTER this is called
+  // HTTPRouter-level middleware applied to all routes added AFTER this is called
   private readonly middlewares: RouteHandler[] = [];
 
   private readonly staticRoutes: Record<
@@ -383,24 +383,24 @@ export class Router implements Plugin {
 
   // ─── Middleware & Grouping ────────────────────────────────
 
-  /** Add router-level middleware. */
+  /** Add HTTPRouter-level middleware. */
   use(...handlers: RouteHandler[]) {
     this.middlewares.push(...handlers);
   }
 
   /** Mount a group of routes under a prefix. */
-  group(prefix: string, callback: (router: Router) => void) {
-    const childRouter = new Router();
+  group(prefix: string, callback: (HTTPRouter: HTTPRouter) => void) {
+    const childRouter = new HTTPRouter();
     callback(childRouter);
     this.mount(prefix, childRouter);
   }
 
-  /** Mount an existing router instance under a prefix. */
-  mount(prefix: string, router: Router) {
+  /** Mount an existing HTTPRouter instance under a prefix. */
+  mount(prefix: string, HTTPRouter: HTTPRouter) {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
     // Use the public routes property if available, otherwise fallback
     // We cast to access private routes for internal mounting
-    const childRoutes = (router as any).routes as RouteRecord[];
+    const childRoutes = (HTTPRouter as any).routes as HttpRoute[];
     const childRouteCount = childRoutes.length;
     for (let routeIndex = 0; routeIndex < childRouteCount; routeIndex += 1) {
       const route = childRoutes[routeIndex];
@@ -733,17 +733,18 @@ export class Router implements Plugin {
 
   install(app: Runtime): void {
     // Capture `this` for use inside the step closure
-    const router = this;
+    const HttpRouter = this;
 
     app.engine.add({
-      name: "router",
+      name: "http-router",
       run: (ctx: Context) => {
+        if (ctx.tcp || ctx.udp || ctx.grpc) return;
         const url = ctx.req.url;
         setPathnameIndices(url);
         const start = PATH_INDICES.start;
         const end = PATH_INDICES.end;
         const pathname = url.slice(start, end) || "/";
-        const match = router.resolve(ctx.req.method, url, start, end);
+        const match = HttpRouter.resolve(ctx.req.method, url, start, end);
 
         if (!match) return;
 
@@ -756,17 +757,25 @@ export class Router implements Plugin {
           app.errorHandler.handle(error, ctx);
 
         ctx.params = match.params;
-        const result = Router.runChain(ctx, match.handlers, handleRouteError);
+        const result = HTTPRouter.runChain(
+          ctx,
+          match.handlers,
+          handleRouteError,
+        );
 
         if (result instanceof Promise) {
           return (async () => {
             await result;
             if (ctx.hasResponded() || ctx.isStopped()) return;
             if (match.source === "specific") {
-              const allMatch = router.resolveAll(pathname);
+              const allMatch = HttpRouter.resolveAll(pathname);
               if (allMatch) {
                 ctx.params = allMatch.params;
-                await Router.runChain(ctx, allMatch.handlers, handleRouteError);
+                await HTTPRouter.runChain(
+                  ctx,
+                  allMatch.handlers,
+                  handleRouteError,
+                );
               }
             }
           })();
@@ -775,11 +784,11 @@ export class Router implements Plugin {
         if (ctx.hasResponded() || ctx.isStopped()) return;
 
         if (match.source === "specific") {
-          const allMatch = router.resolveAll(pathname);
+          const allMatch = HttpRouter.resolveAll(pathname);
           if (!allMatch) return;
 
           ctx.params = allMatch.params;
-          return Router.runChain(ctx, allMatch.handlers, handleRouteError);
+          return HTTPRouter.runChain(ctx, allMatch.handlers, handleRouteError);
         }
       },
     });

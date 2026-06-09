@@ -4,7 +4,7 @@
  * Top-level composition of StepEngine, EventBus, and ErrorHandler.
  */
 
-import { Context } from "./context";
+import { Context } from "./context/context";
 import { buildResponse } from "./response";
 import type { ErrorHandler } from "./error-handler";
 import type { EventBus } from "./event-bus";
@@ -174,6 +174,7 @@ export class Runtime {
       ctx.reset({
         bus: this.bus,
         server,
+        errorHandler: this.errorHandler,
         global: this.globalState,
       });
       return ctx;
@@ -181,11 +182,13 @@ export class Runtime {
     return new Context({
       bus: this.bus,
       server,
+      errorHandler: this.errorHandler,
       global: this.globalState,
     });
   }
 
   releaseContext(ctx: Context): void {
+    if (ctx.markReleased()) return;
     if (this.contextPool.length < this.maxPoolSize) {
       this.contextPool.push(ctx);
     }

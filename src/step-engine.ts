@@ -12,7 +12,7 @@
  *  4. void / "continue" → proceeds to next step
  */
 
-import type { Context } from "./context";
+import type { Context } from "./context/context";
 import type { EventBus } from "./event-bus";
 import type { Step, StepResult } from "./types";
 
@@ -35,104 +35,64 @@ export class StepEngine {
   }
 
   /**
+   * Register a step at the front of the pipeline.
+   * Useful for middleware that must run before routing.
+   */
+  prepend(step: Step): void {
+    if (this.names.has(step.name)) {
+      throw new Error(
+        `StepEngine: Duplicate step name "${step.name}". Each step must have a unique name.`,
+      );
+    }
+    this.names.add(step.name);
+    this.steps.unshift(step);
+  }
+
+  /**
    * Execute all registered steps sequentially.
    * Respects stop signals and propagates errors.
    */
   run(ctx: Context, bus: EventBus): void | Promise<void> {
     const stepCount = this.steps.length;
-    if (stepCount === 0) return;
+    if (stepCount === 0 || ctx.isStopped()) return;
 
-    // Fast path: single step (most common — just the router)
-    if (stepCount === 1) {
+    // Fast path: single sync step with no event listeners (most common)
+    if (stepCount === 1 && !bus.hasListeners("step:start")) {
       const step = this.steps[0]!;
-      if (ctx.isStopped()) return;
-
-      const hasStart = bus.hasListeners("step:start");
-      if (hasStart) {
-        return (async () => {
-          const startResult = await bus.emitAsync(
-            "step:start",
-            ctx,
-            { name: step.name },
-            { source: "step-engine" },
-          );
-          if (startResult === "STOP" || ctx.isStopped()) return;
-
-          try {
-            const r = step.run(ctx, bus);
-            const result = r instanceof Promise ? await r : r;
-            const outcome = await this.handleResult(step, ctx, bus, result);
-            // Check outcome for early termination
-            if (
-              outcome === "stop" ||
-              outcome === "error" ||
-              outcome === "responded" ||
-              outcome === "responded_early"
-            )
-              return;
-          } catch (error) {
-            await this.handleStepError(step, ctx, bus, error);
-            throw error;
-          }
-        })();
-      }
-
-      try {
-        const r = step.run(ctx, bus);
-        if (r instanceof Promise) {
-          return (async () => {
-            try {
-              const result = await r;
-              const outcome = await this.handleResult(step, ctx, bus, result);
-              // Check outcome for early termination
-              if (
-                outcome === "stop" ||
-                outcome === "error" ||
-                outcome === "responded" ||
-                outcome === "responded_early"
-              )
-                return;
-            } catch (error) {
-              await this.handleStepError(step, ctx, bus, error);
-              throw error;
-            }
-          })();
+      const r = step.run(ctx, bus);
+      if (!(r instanceof Promise)) {
+        try {
+          this.handleResultSync(step, ctx, bus, r);
+          return;
+        } catch (error) {
+          this.handleStepErrorSync(step, ctx, bus, error);
+          throw error;
         }
-        const outcome = this.handleResultSync(step, ctx, bus, r);
-        // Sync path: if we need to stop, the outcome is already handled
-        // handleResultSync throws on error, so we don't need to check for "error" here
-        return;
-      } catch (error) {
-        this.handleStepErrorSync(step, ctx, bus, error);
-        throw error;
       }
     }
 
-    // General path: multiple steps
+    // General path (also handles single async step)
+    return this.runSteps(ctx, bus, 0, stepCount);
+  }
+
+  private runSteps(
+    ctx: Context,
+    bus: EventBus,
+    from: number,
+    to: number,
+  ): Promise<void> {
     return (async () => {
-      for (let i = 0; i < stepCount; i++) {
+      for (let i = from; i < to; i++) {
         const step = this.steps[i]!;
         if (ctx.isStopped()) break;
 
-        if (bus.hasListeners("step:start")) {
-          const startResult = await bus.emitAsync(
-            "step:start",
-            ctx,
-            { name: step.name },
-            { source: "step-engine" },
-          );
-          if (startResult === "STOP" || ctx.isStopped()) break;
-        }
-
         try {
-          const r = step.run(ctx, bus);
-          const result = r instanceof Promise ? await r : r;
-          const outcome = await this.handleResult(step, ctx, bus, result);
-
+          const outcome = await this.runStepAsync(step, ctx, bus);
           if (
-            outcome === "stop" ||
+            outcome === "stopped" ||
             outcome === "error" ||
-            outcome === "responded"
+            outcome === "responded" ||
+            outcome === "responded_early"
           )
             break;
         } catch (error) {
@@ -141,6 +101,26 @@ export class StepEngine {
         }
       }
     })();
+  }
+
+  private async runStepAsync(
+    step: Step,
+    ctx: Context,
+    bus: EventBus,
+  ): Promise<string> {
+    if (bus.hasListeners("step:start")) {
+      const startResult = await bus.emitAsync(
+        "step:start",
+        ctx,
+        { name: step.name },
+        { source: "step-engine" },
+      );
+      if (startResult === "STOP" || ctx.isStopped()) return "stopped";
+    }
+
+    const r = step.run(ctx, bus);
+    const result = r instanceof Promise ? await r : r;
+    return this.handleResult(step, ctx, bus, result);
   }
 
   private async handleResult(

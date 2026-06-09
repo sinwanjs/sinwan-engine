@@ -8,7 +8,7 @@
  * and internal details are stripped from responses.
  */
 
-import type { Context } from "./context";
+import type { Context } from "./context/context";
 import type { ErrorPayload } from "./types";
 
 /** Optional hook for external logging/telemetry integration. */
@@ -34,7 +34,7 @@ export interface ErrorHandlerOptions {
   includeStackInDev?: boolean;
 }
 
-const HTTP_STATUS_LABELS: Record<number, string> = {
+export const HTTP_STATUS_LABELS: Record<number, string> = {
   100: "Continue",
   101: "Switching Protocols",
   102: "Processing",
@@ -117,8 +117,12 @@ export class ErrorHandler {
    * Handle an error: normalize it, invoke the optional hook,
    * and set an error response if none has been sent yet.
    */
-  async handle(error: unknown, ctx: Context): Promise<void> {
-    const payload = this.normalize(error);
+  async handle(
+    error: unknown,
+    ctx: Context,
+    showMessageInProduction: boolean = false,
+  ): Promise<void> {
+    const payload = this.normalize(error, showMessageInProduction);
 
     // Fire optional logging/telemetry hook
     if (this.onError) {
@@ -140,7 +144,12 @@ export class ErrorHandler {
         if (type === "html") {
           ctx.html(body, status);
         } else {
-          ctx.json(JSON.parse(body), status);
+          try {
+            ctx.json(JSON.parse(body), status);
+          } catch {
+            // Formatter returned invalid JSON — fall back to plain text
+            ctx.json({ error: body }, status);
+          }
         }
         return;
       }
@@ -382,7 +391,10 @@ export class ErrorHandler {
    * Normalize any thrown value into a consistent ErrorPayload.
    * Production mode suppresses internal error details.
    */
-  private normalize(error: unknown): ErrorPayload {
+  private normalize(
+    error: unknown,
+    showMessageInProduction: boolean,
+  ): ErrorPayload {
     const isProduction = process.env.NODE_ENV === "production";
 
     // Standard Error instances
@@ -391,7 +403,11 @@ export class ErrorHandler {
       const stack =
         !isProduction && this.includeStackInDev ? error.stack : undefined;
       return {
-        message: isProduction ? "Internal Server Error" : error.message,
+        message: showMessageInProduction
+          ? error.message
+          : isProduction
+            ? "Internal Server Error"
+            : error.message,
         statusCode,
         stack,
       };

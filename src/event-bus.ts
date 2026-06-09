@@ -14,7 +14,7 @@ import {
   captureRejectionSymbol,
   errorMonitor,
 } from "node:events";
-import type { Context } from "./context";
+import type { Context } from "./context/context";
 import type {
   EmitOptions,
   EmitResult,
@@ -78,9 +78,8 @@ export class EventBus {
       captureRejections: options.captureRejections ?? false,
     });
 
-    if (options.maxListeners !== undefined) {
-      this.emitter.setMaxListeners(options.maxListeners);
-    }
+    // Guard against unbounded listener growth (memory leak protection)
+    this.emitter.setMaxListeners(options.maxListeners ?? 100);
 
     // Initialize dispatch cache (disabled if size is 0)
     this.dispatchCache =
@@ -118,7 +117,7 @@ export class EventBus {
 
     const wrapped = this.wrapWithCleanup(event, handler, options, false);
     this.emitter.on(event, wrapped);
-    this.invalidateCaches();
+    this.invalidateHasListenersFor(event);
     return this;
   }
 
@@ -159,7 +158,7 @@ export class EventBus {
 
     const wrapped = this.wrapWithCleanup(event, handler, options, true);
     this.emitter.once(event, wrapped);
-    this.invalidateCaches();
+    this.invalidateHasListenersFor(event);
     return this;
   }
 
@@ -182,7 +181,7 @@ export class EventBus {
 
     const wrapped = this.wrapWithCleanup(event, handler, options, false);
     this.emitter.prependListener(event, wrapped);
-    this.invalidateCaches();
+    this.invalidateHasListenersFor(event);
     return this;
   }
 
@@ -205,7 +204,7 @@ export class EventBus {
 
     const wrapped = this.wrapWithCleanup(event, handler, options, true);
     this.emitter.prependOnceListener(event, wrapped);
-    this.invalidateCaches();
+    this.invalidateHasListenersFor(event);
     return this;
   }
 
@@ -219,7 +218,7 @@ export class EventBus {
       this.abortHandlers.delete(handler);
     }
     this.emitter.off(event, handler);
-    this.invalidateCaches();
+    this.invalidateHasListenersFor(event);
     return this;
   }
 
@@ -232,7 +231,8 @@ export class EventBus {
 
   removeAllListeners(event?: string | symbol): this {
     this.emitter.removeAllListeners(event);
-    this.invalidateCaches();
+    if (event) this.invalidateHasListenersFor(event);
+    else this.invalidateCaches();
     return this;
   }
 
@@ -259,31 +259,44 @@ export class EventBus {
 
   private invalidateCaches(): void {
     this.hasListenersCacheVersion += 1;
+  }
 
-    // LRU eviction for hasListeners cache
-    const maxSize = this.options.maxHasListenersCacheSize;
-    if (maxSize > 0 && this.hasListenersCache.size > maxSize) {
-      // Remove oldest entries (first in the access order array)
-      const toRemove = this.hasListenersAccessOrder.splice(
-        0,
-        this.hasListenersCache.size - maxSize,
-      );
-      for (const key of toRemove) {
-        this.hasListenersCache.delete(key);
+  private invalidateHasListenersFor(event: string | symbol): void {
+    this.hasListenersCacheVersion += 1;
+    const key = String(event);
+
+    if (this.options.enableWildcards) {
+      if (key === "*") {
+        // Global wildcard affects every cached entry
+        this.hasListenersCache.clear();
+        this.hasListenersAccessOrder.length = 0;
+        return;
+      }
+      const delim = this.options.wildcardDelimiter;
+      if (key.includes(delim) && key.endsWith("*")) {
+        // Namespace wildcard — drop every cached event under this prefix
+        const prefix = key.slice(0, -1); // e.g. "request:"
+        const keep: string[] = [];
+        for (const k of this.hasListenersAccessOrder) {
+          if (!k.startsWith(prefix)) keep.push(k);
+        }
+        this.hasListenersAccessOrder.splice(
+          0,
+          this.hasListenersAccessOrder.length,
+          ...keep,
+        );
+        for (const stale of this.hasListenersCache.keys()) {
+          if (stale.startsWith(prefix)) this.hasListenersCache.delete(stale);
+        }
+        return;
       }
     }
 
-    // LRU eviction for dispatch cache
-    const maxDispatchSize = this.options.maxDispatchCacheSize;
-    if (maxDispatchSize > 0 && this.dispatchCache.size > maxDispatchSize) {
-      // Remove oldest entries
-      const toRemove = this.dispatchAccessOrder.splice(
-        0,
-        this.dispatchCache.size - maxDispatchSize,
-      );
-      for (const key of toRemove) {
-        this.dispatchCache.delete(key);
-      }
+    // Exact event change only invalidates that exact key
+    if (this.hasListenersCache.has(key)) {
+      this.hasListenersCache.delete(key);
+      const idx = this.hasListenersAccessOrder.indexOf(key);
+      if (idx !== -1) this.hasListenersAccessOrder.splice(idx, 1);
     }
   }
 

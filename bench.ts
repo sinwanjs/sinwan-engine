@@ -1,7 +1,6 @@
-import { Sinwan } from "./src";
+import { Sinwan } from "./dist";
 
-const app = new Sinwan();
-
+const app = await Sinwan.create();
 
 // Simple JSON response
 app.get("/json", (ctx) => {

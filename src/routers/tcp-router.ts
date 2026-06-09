@@ -1,36 +1,30 @@
 import type { Socket, TCPSocketListener, UnixSocketListener } from "bun";
-import type { Context, TCPData } from "./context";
-import type { Runtime } from "./runtime";
+import type { Context, TCPData } from "../context/context";
+import type { Runtime } from "../runtime";
 
-export type TCPHook<T = unknown> = (tcp: Context<T>) => Promise<void> | void;
+export type TCPHook = (tcp: Context) => Promise<void> | void;
 
-export type TCPDataHook<T = unknown> = (
-  tcp: Context<T>,
-  data: Buffer,
-) => Promise<void> | void;
+export type TCPDataHook = (tcp: Context, data: Buffer) => Promise<void> | void;
 
-export type TCPCloseHook<T = unknown> = (
-  tcp: Context<T>,
+export type TCPCloseHook = (
+  tcp: Context,
   error?: Error,
 ) => Promise<void> | void;
 
-export type TCPErrorHook<T = unknown> = (
-  tcp: Context<T>,
-  error: Error,
-) => Promise<void> | void;
+export type TCPErrorHook = (tcp: Context, error: Error) => Promise<void> | void;
 
-export interface TCPRouteConfig<T = unknown> {
-  open?: TCPHook<T>;
-  data?: TCPDataHook<T>;
-  close?: TCPCloseHook<T>;
-  drain?: TCPHook<T>;
-  error?: TCPErrorHook<T>;
+export interface TCPRouteConfig {
+  open?: TCPHook;
+  data?: TCPDataHook;
+  close?: TCPCloseHook;
+  drain?: TCPHook;
+  error?: TCPErrorHook;
 }
 
-export interface TCPClientConfig<T = unknown> extends TCPRouteConfig<T> {
-  connectError?: TCPErrorHook<T>;
-  end?: TCPHook<T>;
-  timeout?: TCPHook<T>;
+export interface TCPClientConfig extends TCPRouteConfig {
+  connectError?: TCPErrorHook;
+  end?: TCPHook;
+  timeout?: TCPHook;
 }
 
 export interface TCPListenOptions<T = unknown> {
@@ -55,10 +49,10 @@ type TCPServer<T = unknown> =
 
 export class TCPRouter {
   public readonly name = "sinwan:tcp-router";
-  private readonly routes = new Map<string, TCPRouteConfig<any>>();
+  private readonly routes = new Map<string, TCPRouteConfig>();
   private readonly servers: TCPServer<any>[] = [];
 
-  tcp<T = unknown>(name: string, config: TCPRouteConfig<T>): void {
+  tcp(name: string, config: TCPRouteConfig): void {
     this.routes.set(name, config);
   }
 
@@ -138,7 +132,7 @@ export class TCPRouter {
     runtime: Runtime,
     name: string,
     options: TCPConnectOptions<T>,
-    config: TCPClientConfig<T>,
+    config: TCPClientConfig,
   ): Promise<SinwanTCPSocket<T>> {
     const socket = {
       open: (socket: SinwanTCPSocket<T>) => {
@@ -235,7 +229,7 @@ export class TCPRouter {
     socket: SinwanTCPSocket<any>,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context<any>, ...args: any[]) => Promise<void> | void,
+    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
     ...args: any[]
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
@@ -243,6 +237,35 @@ export class TCPRouter {
     const ctx = runtime.acquireContext();
     ctx.setTCP(socket);
 
+    // TCP open goes through the StepEngine pipeline (auth, middleware, etc.)
+    if (event === "tcp:open") {
+      const runResult = runtime.engine.run(ctx, runtime.bus);
+
+      const finalizeAndRunHook = async () => {
+        if (runResult instanceof Promise) await runResult;
+        if (ctx.isStopped()) {
+          ctx.dispose();
+          runtime.releaseContext(ctx);
+          return;
+        }
+        this.runTCPHookPostEngine(runtime, ctx, event, payload, hook, args);
+      };
+
+      finalizeAndRunHook().catch(this.tcpHookError);
+      return;
+    }
+
+    this.runTCPHookPostEngine(runtime, ctx, event, payload, hook, args);
+  }
+
+  private runTCPHookPostEngine(
+    runtime: Runtime,
+    ctx: Context,
+    event: string,
+    payload: unknown,
+    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
+    args: any[] = [],
+  ): void {
     const finalize = () => {
       ctx.dispose();
       runtime.releaseContext(ctx);
@@ -261,7 +284,8 @@ export class TCPRouter {
       const result = runHook();
       result.catch(this.tcpHookError).finally(finalize);
     } catch (err) {
-      finalize();
+      ctx.dispose();
+      runtime.releaseContext(ctx);
       this.tcpHookError(err);
     }
   }

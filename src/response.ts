@@ -5,7 +5,7 @@
  * Always produces a valid Response — never returns null/undefined.
  */
 
-import type { Context } from "./context";
+import type { Context } from "./context/context";
 
 /**
  * Build a Web API Response from the finalized Context.
@@ -36,7 +36,6 @@ export function buildResponse(ctx: Context): Response {
     body instanceof ArrayBuffer ||
     ArrayBuffer.isView(body) ||
     body instanceof Blob ||
-    typeof body === "function" ||
     (typeof body === "object" && Symbol.asyncIterator in body)
   ) {
     return new Response(body as any, { status: statusCode, headers });

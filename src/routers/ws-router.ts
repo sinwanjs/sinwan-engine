@@ -13,9 +13,9 @@
  */
 
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
-import type { Context, WSSData } from "./context";
-import type { Plugin } from "./types";
-import type { Runtime } from "./runtime";
+import type { Context, WSSData } from "../context/context";
+import type { Plugin } from "../types";
+import type { Runtime } from "../runtime";
 
 // ─── Public Types ──────────────────────────────────────────
 
@@ -36,50 +36,50 @@ export type Compressor =
 export type WSUpgradeHandler = (ctx: Context) => Promise<void> | void;
 
 /** Handler called on WS lifecycle events. */
-export type WSHook<T = unknown> = (
-  ws: Context<T>,
-  ...args: any[]
-) => Promise<void> | void;
+export type WSHook = (ws: Context, ...args: any[]) => Promise<void> | void;
 
-export type WSMessageHook<T = unknown> = (
-  ws: Context<T>,
+export type WSMessageHook = (
+  ws: Context,
   message: string | ArrayBuffer | Uint8Array,
 ) => Promise<void> | void;
 
-export type WSCloseHook<T = unknown> = (
-  ws: Context<T>,
+export type WSCloseHook = (
+  ws: Context,
   code: number,
   reason: string,
 ) => Promise<void> | void;
 
-export type WSPingPongHook<T = unknown> = (
-  ws: Context<T>,
+export type WSPingPongHook = (
+  ws: Context,
   data: Buffer,
 ) => Promise<void> | void;
 
-export type WSErrorHook<T = unknown> = (
-  ws: Context<T>,
-  error: Error,
-) => Promise<void> | void;
+export type WSErrorHook = (ws: Context, error: Error) => Promise<void> | void;
 
 /** Configuration object for a WebSocket route. */
-export interface WSRouteConfig<T = unknown> {
+export interface WSRouteConfig {
   /** Called before the upgrade. Use ctx.set('ws:data', value) to attach typed data. */
   upgrade?: WSUpgradeHandler;
   /** Called when a socket connection is established. */
-  open?: WSHook<T>;
+  open?: WSHook;
   /** Called when a message is received. */
-  message?: WSMessageHook<T>;
+  message?: WSMessageHook;
   /** Called when a socket is closed. */
-  close?: WSCloseHook<T>;
+  close?: WSCloseHook;
   /** Called when a WebSocket error occurs. */
-  error?: WSErrorHook<T>;
+  error?: WSErrorHook;
   /** Called when the socket is ready to receive more data after backpressure. */
-  drain?: WSHook<T>;
+  drain?: WSHook;
   /** Called when a ping is received. */
-  ping?: WSPingPongHook<T>;
+  ping?: WSPingPongHook;
   /** Called when a pong is received. */
-  pong?: WSPingPongHook<T>;
+  pong?: WSPingPongHook;
+  /**
+   * Keys allowed from the upgrade context state into the WS context.
+   * Prevents arbitrary key injection from client-controlled data.
+   * @default ["userId", "role", "sessionId"]
+   */
+  allowedStateKeys?: string[];
 }
 
 /** Options forwarded to Bun's websocket configuration. */
@@ -110,7 +110,7 @@ export interface WSOptions {
 /** Internal stored route entry. */
 interface WSRouteEntry {
   path: string;
-  config: WSRouteConfig<any>;
+  config: WSRouteConfig;
 }
 
 type BunWSMessage = string | ArrayBuffer | Uint8Array;
@@ -135,7 +135,7 @@ export class WSRouter implements Plugin {
    * @param path URL path to match for the upgrade request.
    * @param config Lifecycle hooks for this route.
    */
-  ws<T = unknown>(path: string, config: WSRouteConfig<T>): void {
+  ws(path: string, config: WSRouteConfig): void {
     const normalized = this.normalizePath(path);
     this.routes.set(normalized, { path: normalized, config });
   }
@@ -174,6 +174,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:open",
           { path: ws.data.path },
+          entry?.config,
           entry?.config.open,
         );
       },
@@ -185,6 +186,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:message",
           { path: ws.data.path, message },
+          entry?.config,
           entry?.config.message,
           message,
         );
@@ -197,6 +199,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:close",
           { path: ws.data.path, code, reason },
+          entry?.config,
           entry?.config.close,
           code,
           reason,
@@ -210,6 +213,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:error",
           { path: ws.data.path, error },
+          entry?.config,
           entry?.config.error,
           error,
         );
@@ -222,6 +226,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:drain",
           { path: ws.data.path },
+          entry?.config,
           entry?.config.drain,
         );
       },
@@ -233,6 +238,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:ping",
           { path: ws.data.path, data },
+          entry?.config,
           entry?.config.ping,
           data,
         );
@@ -245,6 +251,7 @@ export class WSRouter implements Plugin {
           ws,
           "ws:pong",
           { path: ws.data.path, data },
+          entry?.config,
           entry?.config.pong,
           data,
         );
@@ -260,6 +267,7 @@ export class WSRouter implements Plugin {
     app.engine.add({
       name: "sinwan:ws-upgrade",
       run: (ctx: Context) => {
+        if (ctx.tcp || ctx.udp || ctx.grpc) return;
         const server = ctx.server;
         if (!server) return;
 
@@ -280,7 +288,11 @@ export class WSRouter implements Plugin {
           const userData = ctx.get("ws:data");
 
           const success = (server as Server<WSSData>).upgrade(ctx.req, {
-            data: { path: pathname, data: userData ?? null },
+            data: {
+              path: pathname,
+              data: userData ?? null,
+              state: ctx.exportState(),
+            },
           });
 
           if (!success) {
@@ -303,13 +315,25 @@ export class WSRouter implements Plugin {
     ws: ServerWebSocket<WSSData>,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context<any>, ...args: any[]) => Promise<void> | void,
+    config?: WSRouteConfig,
+    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
     ...args: any[]
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
     const ctx = runtime.acquireContext();
     ctx.setWS(ws);
+    if (ws.data.state && config) {
+      // Prevent arbitrary key injection — whitelist only allowed keys
+      const allowedKeys = new Set(
+        config.allowedStateKeys ?? ["userId", "role", "sessionId"],
+      );
+      for (const [key, value] of Object.entries(ws.data.state)) {
+        if (allowedKeys.has(key)) {
+          ctx.set(key, value);
+        }
+      }
+    }
 
     const finalize = () => {
       ctx.dispose();

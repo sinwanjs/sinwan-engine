@@ -6,21 +6,54 @@
 
 // ─── Classes ──────────────────────────────────────────────
 
-export { Context, type ContextOptions } from "./context";
-export type { TCPData, WSSData, UDPData } from "./context";
+export { Context, type ContextOptions } from "./context/context";
+export type { GRPCData, TCPData, WSSData, UDPData } from "./context/context";
 export { StepEngine } from "./step-engine";
 export { EventBus, type EventBusOptions } from "./event-bus";
 export { ErrorHandler, type ErrorHandlerOptions } from "./error-handler";
 export type { ErrorHook } from "./error-handler";
 export { Runtime, type RuntimeConfig } from "./runtime";
 export { Sinwan, type SinwanOptions } from "./sinwan";
+export {
+  LifecycleManager,
+  type LifecyclePayloads,
+  type LifecycleEventName,
+} from "./lifecycle-manager";
 // ─── Functions ────────────────────────────────────────────
 
 export { buildResponse } from "./response";
+export { Page } from "./context/page-renderer";
+export { SocketHelper } from "./context/socket-helper";
 
-export { Router, type RouteHandler } from "./router";
+export {
+  createStep,
+  createPlugin,
+  createHttpModule,
+  createWSModule,
+  createTCPModule,
+  createUDPModule,
+  createGRPCModule,
+} from "./modules";
+export type {
+  StepConfig,
+  PluginConfig,
+  SinwanModule,
+  HTTPModule,
+  HTTPModuleConfig,
+  HTTPRouterFluent,
+  WSModule,
+  WSModuleConfig,
+  TCPModule,
+  TCPModuleConfig,
+  UDPModule,
+  UDPModuleConfig,
+  GRPCModule,
+  GRPCModuleConfig,
+} from "./modules";
 
-export { WSRouter } from "./ws-router";
+export { HTTPRouter, type RouteHandler } from "./routers/http-router";
+
+export { WSRouter } from "./routers/ws-router";
 export type {
   WSRouteConfig,
   WSOptions,
@@ -31,9 +64,9 @@ export type {
   WSCloseHook,
   WSErrorHook,
   WSPingPongHook,
-} from "./ws-router";
+} from "./routers/ws-router";
 
-export { TCPRouter } from "./tcp-router";
+export { TCPRouter } from "./routers/tcp-router";
 export type {
   TCPClientConfig,
   TCPConnectOptions,
@@ -43,9 +76,9 @@ export type {
   TCPHook,
   TCPListenOptions,
   TCPRouteConfig,
-} from "./tcp-router";
+} from "./routers/tcp-router";
 
-export { UDPRouter } from "./udp-router";
+export { UDPRouter } from "./routers/udp-router";
 export type {
   UDPConnectOptions,
   UDPListenOptions,
@@ -54,7 +87,64 @@ export type {
   UDPDataHook,
   UDPErrorHook,
   SinwanUDPSocket,
-} from "./udp-router";
+} from "./routers/udp-router";
+
+export {
+  GRPCRouter,
+  DEFAULT_GRPC_LOADER_OPTIONS,
+  collectGRPCStream,
+  createGRPCError,
+  createGRPCMetadata,
+  grpcBidi,
+  grpcClientStream,
+  grpcServerStream,
+  grpcUnary,
+  loadGRPCService,
+  mergeGRPCLoaderOptions,
+  resolveGRPCServerCredentials,
+  writeGRPCMessage,
+} from "./routers/grpc-router/server";
+export type {
+  GRPCAfterHook,
+  GRPCAnyHandler,
+  GRPCBaseMethodRoute,
+  GRPCBidiStreamHandler,
+  GRPCBidiStreamRoute,
+  GRPCCallInfo,
+  GRPCClientStreamHandler,
+  GRPCClientStreamRoute,
+  GRPCErrorHook,
+  GRPCHook,
+  GRPCHooks,
+  GRPCListenOptions,
+  GRPCLoadedService,
+  GRPCMetadataInit,
+  GRPCMethodConfig,
+  GRPCMethodKind,
+  GRPCMethodRoute,
+  GRPCProtoPath,
+  GRPCRouterDefaults,
+  GRPCServerCredentialsInput,
+  GRPCServerHandle,
+  GRPCServerStreamHandler,
+  GRPCServerStreamRoute,
+  GRPCServiceConfig,
+  GRPCServiceTarget,
+  GRPCUnaryHandler,
+  GRPCUnaryRoute,
+} from "./routers/grpc-router/server";
+
+export {
+  GRPCClient,
+  createGRPCClient,
+  resolveGRPCClientCredentials,
+} from "./routers/grpc-router/client";
+export type {
+  GRPCCallOptions,
+  GRPCClientConfig,
+  GRPCClientCredentialsInput,
+  GRPCClientStreamCall,
+} from "./routers/grpc-router/client";
 
 export { captureRejectionSymbol, errorMonitor } from "node:events";
 
@@ -83,4 +173,5 @@ export type {
   ResponseKind,
   Request,
   SaveFileOptions,
+  GRPCCallPayload,
 } from "./types";

@@ -1,5 +1,7 @@
 {
   "name": "sinwan-engine",
+  "version": "0.1.0",
+  "description": "Sinwan Engine is a powerful and flexible JavaScript framework for building high-performance web applications with ease.",
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
@@ -8,9 +10,15 @@
   "devDependencies": {
     "@types/bun": "latest",
     "happy-dom": "^20.9.0",
-    "sinwan": "1.2.4"
+    "sinwan": "link:sinwan",
+    "bun-plugin-sinwan": "link:bun-plugin-sinwan"
   },
   "peerDependencies": {
     "typescript": "^5"
-  }
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.8.1"
+  },
+  "private": true
 }
