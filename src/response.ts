@@ -16,7 +16,7 @@ export function buildResponse(ctx: Context): Response {
   const { body, statusCode } = ctx;
 
   // Check if headers were ever allocated (lazy init)
-  const headers = ctx["_headers"];
+  const headers = ctx.hasHeaders() ? ctx.headers : undefined;
 
   // Most common fast path: pre-serialized string body (JSON or text)
   if (typeof body === "string") {
@@ -38,7 +38,7 @@ export function buildResponse(ctx: Context): Response {
     body instanceof Blob ||
     (typeof body === "object" && Symbol.asyncIterator in body)
   ) {
-    return new Response(body as any, { status: statusCode, headers });
+    return new Response(body as Bun.BodyInit, { status: statusCode, headers });
   }
 
   return Response.json(body, { status: statusCode, headers });

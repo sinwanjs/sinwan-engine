@@ -1,12 +1,17 @@
 import { EventEmitter } from "node:events";
 import { LifecycleState } from "./types";
 import type { SinwanOptions } from "./sinwan";
+import type { Server } from "bun";
 
 export interface LifecyclePayloads {
   /** Fires once during app bootstrap. Use for plugins, DB connections, config loading. */
   init: { options: SinwanOptions };
   /** Fires when the server starts listening. Use for health checks, metrics, loggers. */
-  ready: { port: number | string; server: any };
+  ready: {
+    port: number | string;
+    server?: Server<unknown>;
+    protocol?: "http" | "ws" | "grpc" | "tcp" | "udp";
+  };
   /** Fires on graceful shutdown (SIGTERM / SIGINT). Use to stop accepting new work. */
   shutdown: undefined;
   /** Final cleanup. Use to close DB connections, flush logs, free resources. */

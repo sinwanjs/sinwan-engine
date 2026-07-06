@@ -72,9 +72,9 @@ export interface ContextOptions {
   requestId?: string;
   bus?: EventBus;
   trace?: EventTraceOptions;
-  server?: any;
+  server?: Server<unknown>;
   errorHandler: ErrorHandler;
-  global?: Map<string, any>;
+  global?: Map<string, unknown>;
 }
 
 /**
@@ -101,7 +101,7 @@ export class Context {
    * The Bun Server instance (if provided).
    * Guards added in clientIP / setTimeout before access.
    */
-  public server: Server<any> | undefined;
+  public server: Server<unknown> | undefined;
 
   private errorHandler: ErrorHandler;
 
@@ -126,16 +126,36 @@ export class Context {
     return this._headers;
   }
 
+  /** Whether any response headers were explicitly set. */
+  hasHeaders(): boolean {
+    return this._headers !== undefined;
+  }
+
   /** Arbitrary per-request state for steps/plugins. */
-  private _state?: Map<string, any>;
-  get state(): Map<string, any> {
+  private _state?: Map<string, unknown>;
+  get state(): Map<string, unknown> {
     if (!this._state) this._state = new Map();
     return this._state;
   }
 
   /** Shared application-level state. */
-  private readonly global: Map<string, any>;
+  private readonly global: Map<string, unknown>;
   public params: Record<string, string> = {};
+
+  /** Cached URLSearchParams parsed from the request URL. */
+  private _query?: URLSearchParams;
+  get query(): URLSearchParams {
+    if (!this._query) {
+      const url = this.req.url;
+      const qIdx = url.indexOf("?");
+      this._query =
+        qIdx === -1
+          ? new URLSearchParams()
+          : new URLSearchParams(url.slice(qIdx + 1));
+    }
+    return this._query;
+  }
+
   private _requestId: string = "";
 
   public maxBodySize: number = 10 * 1024 * 1024; // Default 10MB
@@ -158,16 +178,20 @@ export class Context {
   private static readonly RESPONDED = 1 << 1;
   private static readonly DISPOSED = 1 << 2;
   private static readonly STREAMING = 1 << 3;
+  private static readonly SKIPPED = 1 << 4;
+  private static readonly RESPOND_EARLY = 1 << 5;
+  private static readonly FAILED = 1 << 6;
+  private _failError: unknown = null;
 
   private _parsedBody: unknown = undefined;
-  private _formData?: FormData;
+  private _formData?: Awaited<ReturnType<Request["formData"]>>;
   private _bus?: EventBus;
   private _onDisposeCallbacks: (() => void)[] = [];
   private _released = false;
   private readonly _sockets = new SocketHelper(this);
 
   /** @internal */
-  public _meta: any = {
+  private _meta: EventMeta = {
     name: "",
     event: "",
     timestamp: 0,
@@ -231,8 +255,10 @@ export class Context {
     this.statusCode = 200;
     this.body = null;
     this.params = {};
+    this._query = undefined;
     this._requestId = options.requestId || "";
     this._status = 0;
+    this._failError = null;
     this._parsedBody = undefined;
     this._formData = undefined;
     this._bus = options.bus;
@@ -462,10 +488,7 @@ export class Context {
    * Set an HTML response body.
    * Throws if a response has already been set.
    */
-  html(
-    html: string | Promise<string> | any,
-    status?: number,
-  ): void | Promise<void> {
+  html(html: string | Promise<string>, status?: number): void | Promise<void> {
     if (html instanceof Promise) {
       return html.then((str) => {
         this.guardDoubleResponse();
@@ -523,9 +546,7 @@ export class Context {
    * The stored payload is removed immediately after access.
    */
   redirectData<V>(keyParam: string = "redirect"): V | undefined {
-    const url = new URL(this.req.url);
-
-    const dataKey = url.searchParams.get(keyParam);
+    const dataKey = this.query.get(keyParam);
 
     if (!dataKey) {
       return undefined;
@@ -566,7 +587,9 @@ export class Context {
    * The iterator is wrapped to ensure context disposal on completion.
    */
   iterate(
-    iterator: AsyncIterable<any> | (() => AsyncGenerator<any>),
+    iterator:
+      | AsyncIterable<Uint8Array | string>
+      | (() => AsyncGenerator<Uint8Array | string>),
     status?: number,
     contentType: string = "text/plain",
   ): void {
@@ -710,7 +733,7 @@ export class Context {
   /**
    * Get the client IP and port from the Bun server.
    */
-  get clientIP(): ReturnType<Server<any>["requestIP"]> | undefined {
+  get clientIP(): ReturnType<Server<unknown>["requestIP"]> | undefined {
     return this.server?.requestIP(this.req);
   }
 
@@ -737,7 +760,7 @@ export class Context {
    */
   publishToTopic(
     topic: string,
-    data: Parameters<Server<any>["publish"]>[1],
+    data: Parameters<Server<unknown>["publish"]>[1],
     compress?: boolean,
   ): number {
     return this.getServer().publish(topic, data, compress);
@@ -974,12 +997,14 @@ export class Context {
    * and stops step execution so the pipeline halts after the current step.
    * Centralized to ensure consistent event emission and state management.
    */
-  private commitResponse<T = any>(
-    kind: ResponseKind,
-    body: T,
-    status?: number,
-    contentType?: string,
-  ): void {
+  private commitResponse<
+    T =
+      | string
+      | ReadableStream
+      | AsyncIterable<Uint8Array | string>
+      | object
+      | null,
+  >(kind: ResponseKind, body: T, status?: number, contentType?: string): void {
     this.body = body;
     this.statusCode = status ?? this.statusCode;
 
@@ -1104,16 +1129,29 @@ export class Context {
       return this.req.text();
     }
 
-    // No content-length - stream with limit enforcement
-    // Bun's req.text() is already streaming, but we need to check size after
-    const text = await this.req.text();
-    if (text.length > this.maxBodySize) {
-      throw new HttpError(
-        `Payload too large (limit: ${this.maxBodySize} bytes)`,
-        413,
-      );
+    // No content-length — stream with size enforcement to prevent OOM
+    const reader = this.req.body?.getReader();
+    if (!reader) return "";
+
+    const decoder = new TextDecoder();
+    let result = "";
+    let totalSize = 0;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalSize += value.byteLength;
+      if (totalSize > this.maxBodySize) {
+        reader.cancel().catch(() => {});
+        throw new HttpError(
+          `Payload too large (limit: ${this.maxBodySize} bytes)`,
+          413,
+        );
+      }
+      result += decoder.decode(value, { stream: true });
     }
-    return text;
+    result += decoder.decode();
+    return result;
   }
 
   /**
@@ -1133,7 +1171,7 @@ export class Context {
    * const avatar = fd.get("avatar") as File;
    * ```
    */
-  async formData(): Promise<FormData> {
+  async formData(): Promise<Awaited<ReturnType<Request["formData"]>>> {
     if (this._formData) return this._formData;
 
     const contentType = this.req.headers.get("content-type") || "";
@@ -1167,7 +1205,7 @@ export class Context {
     try {
       // Bun's formData() is streaming-safe for multipart
       // It handles large files without loading everything into memory
-      this._formData = (await this.req.formData()) as any;
+      this._formData = await this.req.formData();
 
       // Enforce size limit for responses without content-length
       // Check total size of all file entries
@@ -1180,9 +1218,9 @@ export class Context {
             entry != null &&
             typeof entry === "object" &&
             "size" in entry &&
-            typeof (entry as any).size === "number"
+            typeof (entry as File).size === "number"
           ) {
-            totalSize += (entry as any).size;
+            totalSize += (entry as File).size;
             if (totalSize > this.maxBodySize) {
               this._formData = undefined;
               throw new HttpError(
@@ -1208,7 +1246,7 @@ export class Context {
         const response = new Response(blob, {
           headers: { "Content-Type": contentType },
         });
-        this._formData = (await response.formData()) as any;
+        this._formData = await response.formData();
       } catch (fallbackErr) {
         if (fallbackErr instanceof HttpError) throw fallbackErr;
         const error = new HttpError(
@@ -1330,6 +1368,25 @@ export class Context {
 
   // ─── Flow Control ───────────────────────────────────────
 
+  /**
+   * Set a raw response without triggering response:set events.
+   * Intended for internal handlers (e.g. InternalAssets) that need
+   * to short-circuit the pipeline without the full commitResponse overhead.
+   */
+  setRawResponse(
+    body: unknown,
+    status: number = 200,
+    contentType?: string,
+  ): void {
+    this.body = body;
+    this.statusCode = status;
+    if (contentType) {
+      this.headers.set("Content-Type", contentType);
+    }
+    this._status |= Context.RESPONDED;
+    this.stop();
+  }
+
   /** Signal that step execution should halt after the current step. */
   stop(): void {
     this._status |= Context.STOPPED;
@@ -1353,6 +1410,53 @@ export class Context {
   /** Whether the context has an active streaming response. */
   isStreaming(): boolean {
     return (this._status & Context.STREAMING) !== 0;
+  }
+
+  /** Signal that the next step should be skipped. */
+  skip(): void {
+    this._status |= Context.SKIPPED;
+  }
+
+  /** Whether skip() has been called. */
+  isSkipped(): boolean {
+    return (this._status & Context.SKIPPED) !== 0;
+  }
+
+  /** Clear the skip flag — used by runChain to prevent skip from propagating to StepEngine. */
+  clearSkip(): void {
+    this._status &= ~Context.SKIPPED;
+  }
+
+  /** Signal an early response — halts the pipeline without setting a response body. */
+  respond(): void {
+    this._status |= Context.RESPOND_EARLY;
+  }
+
+  /** Whether respond() has been called. */
+  isRespondEarly(): boolean {
+    return (this._status & Context.RESPOND_EARLY) !== 0;
+  }
+
+  /** Signal a step failure with an error — halts the pipeline and throws. */
+  fail(error: unknown): void {
+    this._failError = error;
+    this._status |= Context.FAILED;
+  }
+
+  /** Whether fail() has been called. */
+  isFailed(): boolean {
+    return (this._status & Context.FAILED) !== 0;
+  }
+
+  /** Clear the fail flag — used by runChain to prevent fail from propagating to StepEngine after onError handles it. */
+  clearFail(): void {
+    this._status &= ~Context.FAILED;
+    this._failError = null;
+  }
+
+  /** The error passed to fail(). Available when isFailed() is true. */
+  get failError(): unknown {
+    return this._failError;
   }
 
   // ─── EventBus Interaction ──────────────────────────────
@@ -1532,7 +1636,7 @@ export class Context {
     return this._bus;
   }
 
-  private getServer(): Server<any> {
+  private getServer(): Server<unknown> {
     if (!this.server) {
       throw new Error("Context is not attached to a Server.");
     }
@@ -1633,15 +1737,21 @@ export class Context {
    * This ensures the context is properly cleaned up after streaming.
    */
   private wrapIteratorWithDisposal(
-    iterator: AsyncIterable<any> | (() => AsyncGenerator<any>),
-  ): AsyncIterable<any> {
+    iterator:
+      | AsyncIterable<Uint8Array | string>
+      | (() => AsyncGenerator<Uint8Array | string>),
+  ): AsyncIterable<Uint8Array | string> {
     const self = this;
 
     // Handle generator function
     const source = typeof iterator === "function" ? iterator() : iterator;
 
     return {
-      [Symbol.asyncIterator](): AsyncGenerator<any, void, unknown> {
+      [Symbol.asyncIterator](): AsyncGenerator<
+        Uint8Array | string,
+        void,
+        unknown
+      > {
         const originalIterator = source[Symbol.asyncIterator]();
         let done = false;
 
@@ -1671,7 +1781,10 @@ export class Context {
             if (originalIterator.return) {
               return originalIterator.return(value);
             }
-            return { done: true, value } as IteratorResult<any, void>;
+            return { done: true, value } as IteratorResult<
+              Uint8Array | string,
+              void
+            >;
           },
           async throw(error) {
             cleanup();
@@ -1680,7 +1793,7 @@ export class Context {
             }
             throw error;
           },
-        } as AsyncGenerator<any, void, unknown>;
+        } as AsyncGenerator<Uint8Array | string, void, unknown>;
       },
     };
   }

@@ -1,18 +1,22 @@
 /**
  * SinwanJS Core Runtime — ErrorHandler
  *
- * Centralized error normalization and response generation.
- * Converts any thrown value into a consistent error response.
+ * HTTP/WS-specific error handler built on top of ErrorNormalizer.
+ * Uses ErrorNormalizer for normalization and production safety,
+ * then formats the error as an HTTP response (JSON or HTML).
  *
- * In production mode (NODE_ENV === "production"), stack traces
- * and internal details are stripped from responses.
+ * TCP, UDP, and gRPC routers use ErrorNormalizer directly.
  */
 
 import type { Context } from "./context/context";
 import type { ErrorPayload } from "./types";
+import {
+  ErrorNormalizer,
+  type ErrorHook,
+  type ErrorNormalizerOptions,
+} from "./error-normalizer";
 
-/** Optional hook for external logging/telemetry integration. */
-export type ErrorHook = (error: unknown, ctx: Context) => void | Promise<void>;
+export type { ErrorHook } from "./error-normalizer";
 
 /** Response format type for error responses. */
 export type ErrorResponseType = "json" | "html";
@@ -24,14 +28,11 @@ export type ErrorResponseFormatter = (
 ) => { body: string; type: ErrorResponseType };
 
 /** Options for configuring the ErrorHandler */
-export interface ErrorHandlerOptions {
-  onError?: ErrorHook;
+export interface ErrorHandlerOptions extends ErrorNormalizerOptions {
   /** Response type to use for error responses (default: "json"). */
   responseType?: ErrorResponseType;
   /** Optional callback to customize the error response format. */
   formatResponse?: ErrorResponseFormatter;
-  /** Include stack traces in development mode (default: true). */
-  includeStackInDev?: boolean;
 }
 
 export const HTTP_STATUS_LABELS: Record<number, string> = {
@@ -101,16 +102,19 @@ export const HTTP_STATUS_LABELS: Record<number, string> = {
 };
 
 export class ErrorHandler {
-  private readonly onError?: ErrorHook;
+  private readonly _normalizer: ErrorNormalizer;
   private readonly responseType: ErrorResponseType;
   private readonly formatResponse?: ErrorResponseFormatter;
-  private readonly includeStackInDev: boolean;
 
   constructor(options?: ErrorHandlerOptions) {
-    this.onError = options?.onError;
+    this._normalizer = new ErrorNormalizer(options);
     this.responseType = options?.responseType ?? "json";
     this.formatResponse = options?.formatResponse;
-    this.includeStackInDev = options?.includeStackInDev ?? true;
+  }
+
+  /** Expose the internal ErrorNormalizer for use by non-HTTP routers. */
+  get normalizer(): ErrorNormalizer {
+    return this._normalizer;
   }
 
   /**
@@ -122,17 +126,10 @@ export class ErrorHandler {
     ctx: Context,
     showMessageInProduction: boolean = false,
   ): Promise<void> {
-    const payload = this.normalize(error, showMessageInProduction);
+    const payload = this._normalizer.normalize(error, showMessageInProduction);
 
     // Fire optional logging/telemetry hook
-    if (this.onError) {
-      try {
-        await this.onError(error, ctx);
-      } catch (hookError) {
-        // Log hook errors but don't prevent error response delivery
-        console.error("[ErrorHandler] Hook error:", hookError);
-      }
-    }
+    await this._normalizer.report(error, ctx);
 
     // Only set a response if one hasn't been sent already
     if (!ctx.hasResponded()) {
@@ -386,73 +383,4 @@ export class ErrorHandler {
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
-
-  /**
-   * Normalize any thrown value into a consistent ErrorPayload.
-   * Production mode suppresses internal error details.
-   */
-  private normalize(
-    error: unknown,
-    showMessageInProduction: boolean,
-  ): ErrorPayload {
-    const isProduction = process.env.NODE_ENV === "production";
-
-    // Standard Error instances
-    if (error instanceof Error) {
-      const statusCode = hasStatusCode(error) ? error.statusCode : undefined;
-      const stack =
-        !isProduction && this.includeStackInDev ? error.stack : undefined;
-      return {
-        message: showMessageInProduction
-          ? error.message
-          : isProduction
-            ? "Internal Server Error"
-            : error.message,
-        statusCode,
-        stack,
-      };
-    }
-
-    // Plain string throws
-    if (typeof error === "string") {
-      return {
-        message: isProduction ? "Internal Server Error" : error,
-      };
-    }
-
-    // Object with a message property (e.g., { message: "...", statusCode: 400 })
-    if (isErrorLike(error)) {
-      return {
-        message: isProduction ? "Internal Server Error" : error.message,
-        statusCode:
-          typeof error.statusCode === "number" ? error.statusCode : undefined,
-      };
-    }
-
-    // Completely unknown type
-    return { message: "Internal Server Error" };
-  }
-}
-
-// ─── Type Guards ──────────────────────────────────────────
-
-interface ErrorLike {
-  message: string;
-  statusCode?: unknown;
-}
-
-function isErrorLike(value: unknown): value is ErrorLike {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "message" in value &&
-    typeof (value as ErrorLike).message === "string"
-  );
-}
-
-function hasStatusCode(error: Error): error is Error & { statusCode: number } {
-  return (
-    "statusCode" in error &&
-    typeof (error as Error & { statusCode: unknown }).statusCode === "number"
-  );
 }

@@ -27,8 +27,8 @@ import type { Sinwan } from "./sinwan";
 import { HTTPRouter, type RouteHandler } from "./routers/http-router";
 import type { WSRouteConfig } from "./routers/ws-router";
 import type { TCPRouteConfig } from "./routers/tcp-router";
+import { getGRPCProvider } from "./context/grpc-provider";
 import type { UDPRouteConfig } from "./routers/udp-router";
-import type { GRPCServiceConfig } from "./routers/grpc-router/server";
 import type { Plugin, Step } from "./types";
 
 // ─── Core Module Interface ─────────────────────────────────
@@ -151,10 +151,17 @@ function createFluentRouter(router: HTTPRouter): HTTPRouterFluent {
     "use",
   ] as const;
   for (const method of methods) {
-    (fluent as any)[method] = (...args: any[]) => {
-      (router as any)[method](...args);
-      return fluent;
-    };
+    if (method === "use") {
+      fluent[method] = (...handlers: RouteHandler[]) => {
+        router.use(...handlers);
+        return fluent;
+      };
+    } else {
+      fluent[method] = (path: string, ...handlers: RouteHandler[]) => {
+        router[method](path, ...handlers);
+        return fluent;
+      };
+    }
   }
 
   // Wrap group to pass fluent router to callback
@@ -266,11 +273,9 @@ export function createUDPModule(config: UDPModuleConfig): UDPModule {
   };
 }
 
-// ─── gRPC Module ─────────────────────────────────────────────
-
 export interface GRPCModuleConfig {
   name: string;
-  config: GRPCServiceConfig;
+  config: unknown;
   description?: string;
 }
 
@@ -282,8 +287,8 @@ export function createGRPCModule(config: GRPCModuleConfig): GRPCModule {
   return {
     type: "grpc",
     name: config.description ?? `grpc:${config.name}`,
-    register(app) {
-      app.grpc(config.name, config.config);
+    register(_app) {
+      getGRPCProvider().registerService(config.name, config.config);
     },
   };
 }

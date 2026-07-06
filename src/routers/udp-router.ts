@@ -43,15 +43,18 @@ type SinwanUDPData<T = unknown> = Omit<UDPData, "data"> & {
 // we will just define it as having data.
 export type SinwanUDPSocket<T = unknown> = udp.BaseUDPSocket & {
   data: SinwanUDPData<T>;
-  // Allow union of send methods for convenience
-  sendMany(packets: readonly any[]): number;
-  send(data: any, port?: number, address?: string): boolean;
+  sendMany(packets: readonly (Buffer | string | number)[]): number;
+  send(
+    data: Buffer | string | ArrayBufferLike | ArrayBufferView,
+    port?: number,
+    address?: string,
+  ): boolean;
 };
 
 export class UDPRouter {
   public readonly name = "sinwan:udp-router";
   private readonly routes = new Map<string, UDPRouteConfig>();
-  private readonly sockets: SinwanUDPSocket<any>[] = [];
+  private readonly sockets: SinwanUDPSocket<UDPData>[] = [];
 
   udp(name: string, config: UDPRouteConfig): void {
     this.routes.set(name, config);
@@ -113,7 +116,7 @@ export class UDPRouter {
 
     socketRef = socket as unknown as SinwanUDPSocket<T>;
     socketRef.data = { name, data: options.data ?? null };
-    this.sockets.push(socketRef);
+    this.sockets.push(socketRef as SinwanUDPSocket<UDPData>);
 
     // Manually trigger open hook since Bun UDP doesn't have one
     this.runUDPHook(runtime, socketRef, "udp:open", { name }, config.open);
@@ -175,7 +178,7 @@ export class UDPRouter {
 
     socketRef = socket as unknown as SinwanUDPSocket<T>;
     socketRef.data = { name, data: options.data ?? null };
-    this.sockets.push(socketRef);
+    this.sockets.push(socketRef as SinwanUDPSocket<UDPData>);
 
     this.runUDPHook(runtime, socketRef, "udp:open", { name }, config.open);
 
@@ -200,22 +203,28 @@ export class UDPRouter {
     this.sockets.length = 0;
   }
 
-  private udpHookError(err: unknown): void {
-    console.error("[sinwan:udp] Unhandled hook error:", err);
+  private async udpHookError(
+    runtime: Runtime,
+    err: unknown,
+    ctx?: Context,
+  ): Promise<void> {
+    await runtime.errorNormalizer.report(err, ctx);
+    const payload = runtime.errorNormalizer.normalize(err);
+    console.error(`[sinwan:udp] ${payload.message}`, err);
   }
 
-  private runUDPHook(
+  private runUDPHook<T, A extends unknown[]>(
     runtime: Runtime,
-    socket: SinwanUDPSocket<any>,
+    socket: SinwanUDPSocket<T>,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
-    ...args: any[]
+    hook: ((ctx: Context, ...args: A) => Promise<void> | void) | undefined,
+    ...args: A
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
     const ctx = runtime.acquireContext();
-    ctx.setUDP(socket);
+    ctx.setUDP(socket as SinwanUDPSocket<UDPData>);
 
     const finalize = () => {
       ctx.dispose();
@@ -233,10 +242,12 @@ export class UDPRouter {
       };
 
       const result = runHook();
-      result.catch(this.udpHookError).finally(finalize);
+      result
+        .catch((err) => this.udpHookError(runtime, err, ctx))
+        .finally(finalize);
     } catch (err) {
       finalize();
-      this.udpHookError(err);
+      void this.udpHookError(runtime, err, ctx);
     }
   }
 }

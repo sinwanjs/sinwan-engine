@@ -109,18 +109,12 @@ function splitPath(path: string): string[] {
   return path.split("/").filter(Boolean);
 }
 
-const PATH_INDICES = { start: 0, end: 0 };
-
-function setPathnameIndices(url: string): void {
+function getPathnameIndices(url: string): { start: number; end: number } {
   let start = 0;
   const protoIdx = url.indexOf("://");
   if (protoIdx !== -1) {
     start = url.indexOf("/", protoIdx + 3);
-    if (start === -1) {
-      PATH_INDICES.start = 0;
-      PATH_INDICES.end = 0;
-      return;
-    }
+    if (start === -1) return { start: 0, end: 0 };
   }
 
   let end = url.length;
@@ -136,47 +130,38 @@ function setPathnameIndices(url: string): void {
     end -= 1;
   }
 
-  PATH_INDICES.start = start;
-  PATH_INDICES.end = end;
+  return { start, end };
 }
 
-function segmentPathRaw(url: string, start: number, end: number): number {
-  segCount = 0;
+function segmentPathRaw(url: string, start: number, end: number): string[] {
+  const segments: string[] = [];
   let s = url.charCodeAt(start) === 47 ? start + 1 : start;
   for (let i = s; i <= end; i += 1) {
     if (i === end || url.charCodeAt(i) === 47) {
-      if (i > s) SEG_BUFFER[segCount++] = url.slice(s, i);
+      if (i > s) segments.push(url.slice(s, i));
       s = i + 1;
     }
   }
-  return segCount;
+  return segments;
 }
 
-// Pre-allocated segment buffer for request paths
-const SEG_BUFFER: string[] = new Array(64);
-let segCount = 0;
-
-function segmentPath(pathname: string): number {
-  segCount = 0;
+function segmentPath(pathname: string): string[] {
+  const segments: string[] = [];
   let start = pathname.charCodeAt(0) === 47 ? 1 : 0;
   for (let i = start; i <= pathname.length; i += 1) {
     if (i === pathname.length || pathname.charCodeAt(i) === 47) {
-      if (i > start) SEG_BUFFER[segCount++] = pathname.slice(start, i);
+      if (i > start) segments.push(pathname.slice(start, i));
       start = i + 1;
     }
   }
-  return segCount;
+  return segments;
 }
 
 function clearParams(params: Record<string, string>): void {
   for (const key in params) delete params[key];
 }
 
-function wildcardValue(
-  segments: string[],
-  depth: number,
-  segCount: number,
-): string {
+function wildcardValue(segments: string[], depth: number): string {
   let rest = "";
   const append = (value: string) => {
     if (value === "") return;
@@ -184,7 +169,7 @@ function wildcardValue(
     else rest += `/${value}`;
   };
 
-  for (let i = depth; i < segCount; i += 1) {
+  for (let i = depth; i < segments.length; i += 1) {
     const seg = segments[i];
     if (seg !== undefined) append(seg);
   }
@@ -249,12 +234,11 @@ function radixInsert(
 function radixSearch(
   node: RadixNode,
   segments: string[],
-  segCount: number,
   depth: number,
   method: HttpMethod,
   params: Record<string, string>,
 ): RouteHandler[] | null {
-  if (depth === segCount) {
+  if (depth === segments.length) {
     const direct = getHandlers(node, method);
     if (direct) return direct;
 
@@ -274,14 +258,7 @@ function radixSearch(
     if (child.isParam || child.isWildcard) continue;
 
     if (child.prefix !== seg) continue;
-    const found = radixSearch(
-      child,
-      segments,
-      segCount,
-      depth + 1,
-      method,
-      params,
-    );
+    const found = radixSearch(child, segments, depth + 1, method, params);
     if (found) return found;
   }
 
@@ -289,21 +266,14 @@ function radixSearch(
     if (!child.isParam) continue;
 
     params[child.paramName] = seg;
-    const found = radixSearch(
-      child,
-      segments,
-      segCount,
-      depth + 1,
-      method,
-      params,
-    );
+    const found = radixSearch(child, segments, depth + 1, method, params);
     if (found) return found;
     delete params[child.paramName];
   }
 
   for (const child of node.children) {
     if (!child.isWildcard) continue;
-    params["_wildcard"] = wildcardValue(segments, depth, segCount);
+    params["_wildcard"] = wildcardValue(segments, depth);
     return getHandlers(child, method);
   }
 
@@ -313,10 +283,9 @@ function radixSearch(
 function radixHasAnyMethod(
   node: RadixNode,
   segments: string[],
-  segCount: number,
   depth: number,
 ): boolean {
-  if (depth === segCount) {
+  if (depth === segments.length) {
     if (nodeHasAnyHandlers(node)) return true;
     const wildcardChild = node.children.find((child) => child.isWildcard);
     return wildcardChild ? nodeHasAnyHandlers(wildcardChild) : false;
@@ -329,12 +298,12 @@ function radixHasAnyMethod(
     if (child.isParam || child.isWildcard) continue;
 
     if (child.prefix !== seg) continue;
-    if (radixHasAnyMethod(child, segments, segCount, depth + 1)) return true;
+    if (radixHasAnyMethod(child, segments, depth + 1)) return true;
   }
 
   for (const child of node.children) {
     if (!child.isParam) continue;
-    if (radixHasAnyMethod(child, segments, segCount, depth + 1)) return true;
+    if (radixHasAnyMethod(child, segments, depth + 1)) return true;
   }
 
   for (const child of node.children) {
@@ -348,8 +317,12 @@ function radixHasAnyMethod(
 export class HTTPRouter implements Plugin {
   public readonly name = "sinwan:http-router";
 
-  // Used by group() and debug tooling; private but preserved for compatibility.
   private readonly routes: HttpRoute[] = [];
+
+  /** Returns a read-only view of registered routes (used by mount()). */
+  getRoutes(): readonly HttpRoute[] {
+    return this.routes;
+  }
 
   // HTTPRouter-level middleware applied to all routes added AFTER this is called
   private readonly middlewares: RouteHandler[] = [];
@@ -398,9 +371,7 @@ export class HTTPRouter implements Plugin {
   /** Mount an existing HTTPRouter instance under a prefix. */
   mount(prefix: string, HTTPRouter: HTTPRouter) {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
-    // Use the public routes property if available, otherwise fallback
-    // We cast to access private routes for internal mounting
-    const childRoutes = (HTTPRouter as any).routes as HttpRoute[];
+    const childRoutes = HTTPRouter.getRoutes();
     const childRouteCount = childRoutes.length;
     for (let routeIndex = 0; routeIndex < childRouteCount; routeIndex += 1) {
       const route = childRoutes[routeIndex];
@@ -559,11 +530,10 @@ export class HTTPRouter implements Plugin {
     // BUT we can use a trie for everything or a specialized cache.
     const pathname = url.slice(start, end) || "/";
 
-    let segCount = -1;
-    const segs = SEG_BUFFER;
-    const ensureSegments = () => {
-      if (segCount === -1) segCount = segmentPathRaw(url, start, end);
-      return segCount;
+    let segs: string[] | null = null;
+    const ensureSegments = (): string[] => {
+      if (segs === null) segs = segmentPathRaw(url, start, end);
+      return segs;
     };
 
     // 1) Exact method match
@@ -579,15 +549,8 @@ export class HTTPRouter implements Plugin {
       }
 
       const params: Record<string, string> = Object.create(null);
-      const count = ensureSegments();
-      const handlerBucket = radixSearch(
-        this.radix[m],
-        segs,
-        count,
-        0,
-        m,
-        params,
-      );
+      const segments = ensureSegments();
+      const handlerBucket = radixSearch(this.radix[m], segments, 0, m, params);
       if (handlerBucket) {
         return {
           type: "match",
@@ -610,11 +573,10 @@ export class HTTPRouter implements Plugin {
         }
 
         clearParams(params);
-        const count = ensureSegments();
+        const segments = ensureSegments();
         const getBucket = radixSearch(
           this.radix.GET,
-          segs,
-          count,
+          segments,
           0,
           "GET",
           params,
@@ -642,8 +604,8 @@ export class HTTPRouter implements Plugin {
     }
 
     const params: Record<string, string> = Object.create(null);
-    const count = ensureSegments();
-    const allBucket = radixSearch(this.radixAll, segs, count, 0, "ALL", params);
+    const segments = ensureSegments();
+    const allBucket = radixSearch(this.radixAll, segments, 0, "ALL", params);
     if (allBucket) {
       return {
         type: "match",
@@ -654,14 +616,15 @@ export class HTTPRouter implements Plugin {
     }
 
     // 4) 405 detection
+    const segsFor405 = ensureSegments();
     const routeExists =
       SPECIFIC_METHODS.some(
         (sm) =>
           this.staticRoutes[sm].has(pathname) ||
-          radixHasAnyMethod(this.radix[sm], segs, ensureSegments(), 0),
+          radixHasAnyMethod(this.radix[sm], segsFor405, 0),
       ) ||
       this.staticAll.has(pathname) ||
-      radixHasAnyMethod(this.radixAll, segs, ensureSegments(), 0);
+      radixHasAnyMethod(this.radixAll, segsFor405, 0);
 
     if (routeExists) return { type: "method-not-allowed" };
 
@@ -677,15 +640,8 @@ export class HTTPRouter implements Plugin {
     }
 
     const params: Record<string, string> = Object.create(null);
-    const count = segmentPath(pathname);
-    const allBucket = radixSearch(
-      this.radixAll,
-      SEG_BUFFER,
-      count,
-      0,
-      "ALL",
-      params,
-    );
+    const segments = segmentPath(pathname);
+    const allBucket = radixSearch(this.radixAll, segments, 0, "ALL", params);
     if (allBucket) {
       return { handlers: allBucket, params: copyParams(params) };
     }
@@ -709,15 +665,28 @@ export class HTTPRouter implements Plugin {
         return (async () => {
           try {
             await result;
-            if (ctx.hasResponded() || ctx.isStopped()) return;
+            if (ctx.isFailed()) throw ctx.failError;
+            if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly())
+              return;
+            if (ctx.isSkipped()) {
+              i += 1;
+              ctx.clearSkip();
+            } // Skip next handler
             for (let j = i + 1; j < len; j += 1) {
               const h = chain[j];
               if (h) await h(ctx);
-              if (ctx.hasResponded() || ctx.isStopped()) return;
+              if (ctx.isFailed()) throw ctx.failError;
+              if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly())
+                return;
+              if (ctx.isSkipped()) {
+                j += 1;
+                ctx.clearSkip();
+              } // Skip next handler
             }
           } catch (error) {
             if (onError) {
               await onError(error);
+              ctx.clearFail();
               return;
             }
             throw error;
@@ -725,7 +694,19 @@ export class HTTPRouter implements Plugin {
         })();
       }
 
-      if (ctx.hasResponded() || ctx.isStopped()) return;
+      if (ctx.isFailed()) {
+        if (onError) {
+          const r = onError(ctx.failError);
+          ctx.clearFail();
+          if (r instanceof Promise) return (async () => await r)();
+        }
+        throw ctx.failError;
+      }
+      if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) return;
+      if (ctx.isSkipped()) {
+        i += 1;
+        ctx.clearSkip();
+      } // Skip next handler
     }
   }
 
@@ -740,9 +721,7 @@ export class HTTPRouter implements Plugin {
       run: (ctx: Context) => {
         if (ctx.tcp || ctx.udp || ctx.grpc) return;
         const url = ctx.req.url;
-        setPathnameIndices(url);
-        const start = PATH_INDICES.start;
-        const end = PATH_INDICES.end;
+        const { start, end } = getPathnameIndices(url);
         const pathname = url.slice(start, end) || "/";
         const match = HttpRouter.resolve(ctx.req.method, url, start, end);
 

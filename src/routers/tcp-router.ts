@@ -1,4 +1,5 @@
-import type { Socket, TCPSocketListener, UnixSocketListener } from "bun";
+import type { Socket, TCPSocketListener, TLSOptions, UnixSocketListener } from "bun";
+// import type { TLSOptions } from "bun";
 import type { Context, TCPData } from "../context/context";
 import type { Runtime } from "../runtime";
 
@@ -30,8 +31,8 @@ export interface TCPClientConfig extends TCPRouteConfig {
 export interface TCPListenOptions<T = unknown> {
   hostname?: string;
   port?: number | string;
-  unix?: string;
-  tls?: any;
+  unix?: UnixSocketListener<SinwanTCPData<T>>["unix"];
+  tls?: TLSOptions;
   data?: T;
 }
 
@@ -50,7 +51,7 @@ type TCPServer<T = unknown> =
 export class TCPRouter {
   public readonly name = "sinwan:tcp-router";
   private readonly routes = new Map<string, TCPRouteConfig>();
-  private readonly servers: TCPServer<any>[] = [];
+  private readonly servers: TCPServer<unknown>[] = [];
 
   tcp(name: string, config: TCPRouteConfig): void {
     this.routes.set(name, config);
@@ -114,7 +115,7 @@ export class TCPRouter {
       options.unix !== undefined
         ? Bun.listen<SinwanTCPData<T>>({
             unix: options.unix,
-            ...(options.tls !== undefined ? { tls: options.tls } : {}),
+            ...(options.tls?.key !== undefined ? { tls: options.tls } : {}),
             socket,
           })
         : Bun.listen<SinwanTCPData<T>>({
@@ -220,17 +221,23 @@ export class TCPRouter {
     this.servers.length = 0;
   }
 
-  private tcpHookError(err: unknown): void {
-    console.error("[sinwan:tcp] Unhandled hook error:", err);
+  private async tcpHookError(
+    runtime: Runtime,
+    err: unknown,
+    ctx?: Context,
+  ): Promise<void> {
+    await runtime.errorNormalizer.report(err, ctx);
+    const payload = runtime.errorNormalizer.normalize(err);
+    console.error(`[sinwan:tcp] ${payload.message}`, err);
   }
 
-  private runTCPHook(
+  private runTCPHook<A extends unknown[]>(
     runtime: Runtime,
-    socket: SinwanTCPSocket<any>,
+    socket: SinwanTCPSocket<unknown>,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
-    ...args: any[]
+    hook?: (ctx: Context, ...args: A) => Promise<void> | void,
+    ...args: A
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
@@ -251,20 +258,20 @@ export class TCPRouter {
         this.runTCPHookPostEngine(runtime, ctx, event, payload, hook, args);
       };
 
-      finalizeAndRunHook().catch(this.tcpHookError);
+      finalizeAndRunHook().catch((err) => this.tcpHookError(runtime, err, ctx));
       return;
     }
 
     this.runTCPHookPostEngine(runtime, ctx, event, payload, hook, args);
   }
 
-  private runTCPHookPostEngine(
+  private runTCPHookPostEngine<A extends unknown[]>(
     runtime: Runtime,
     ctx: Context,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
-    args: any[] = [],
+    hook: ((ctx: Context, ...args: A) => Promise<void> | void) | undefined,
+    args: A,
   ): void {
     const finalize = () => {
       ctx.dispose();
@@ -282,11 +289,13 @@ export class TCPRouter {
       };
 
       const result = runHook();
-      result.catch(this.tcpHookError).finally(finalize);
+      result
+        .catch((err) => this.tcpHookError(runtime, err, ctx))
+        .finally(finalize);
     } catch (err) {
       ctx.dispose();
       runtime.releaseContext(ctx);
-      this.tcpHookError(err);
+      void this.tcpHookError(runtime, err, ctx);
     }
   }
 }

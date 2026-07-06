@@ -27,28 +27,16 @@ import {
   type UDPListenOptions,
   type UDPRouteConfig,
 } from "./routers/udp-router";
-import {
-  GRPCRouter,
-  type GRPCHook,
-  type GRPCErrorHook,
-  type GRPCAfterHook,
-  type GRPCListenOptions,
-  type GRPCRouterDefaults,
-  type GRPCServerHandle,
-  type GRPCServiceConfig,
-} from "./routers/grpc-router/server";
-import {
-  GRPCClient,
-  type GRPCClientConfig,
-} from "./routers/grpc-router/client";
+import { getGRPCProvider, hasGRPCProvider } from "./context/grpc-provider";
 import { LifecycleManager } from "./lifecycle-manager";
+import { InternalAssets, type InternalAssetsOptions } from "./internal-assets";
 import type {
   Server,
   Socket,
   TCPSocketListener,
   UnixSocketListener,
 } from "bun";
-import type { Plugin, Request, Step } from "./types";
+import type { EventHandler, Plugin, Request, Step } from "./types";
 import { LifecycleState } from "./types";
 import type { SinwanModule } from "./modules";
 import type { Context } from "./context/context";
@@ -61,8 +49,8 @@ export interface SinwanOptions {
   websocket?: WSOptions;
   /** Error handler options. */
   error?: ErrorHandlerOptions;
-  /** gRPC router defaults (loader, credentials, server options, hooks). */
-  grpc?: GRPCRouterDefaults;
+  /** Internal assets handler options (favicon, robots.txt, etc). */
+  internalAssets?: InternalAssetsOptions;
 }
 
 export class Sinwan {
@@ -88,23 +76,23 @@ export class Sinwan {
   /** UDP Router: Handles UDP route registration and socket dispatch.*/
   private readonly udpRouter: UDPRouter;
 
-  /** gRPC Router: Handles proto-backed gRPC service registration and dispatch.*/
-  private readonly grpcRouter: GRPCRouter;
-
   /** Runtime: Handles the runtime for the application.*/
   private readonly runtime: Runtime;
 
   /** Error Handler: Handles errors for the application.*/
   private readonly errorHandler: ErrorHandler;
 
+  /** Internal Assets: Handles static asset paths (favicon, robots.txt, etc). */
+  public readonly internalAssets: InternalAssets;
+
   /** Shared State: Manages the shared state for the application.*/
-  private readonly sharedState = new Map<string, any>();
+  private readonly sharedState = new Map<string, unknown>();
 
   /** Config: Manages the configuration for the application.*/
   private readonly config: SinwanOptions;
 
   /** Server: Manages the server for the application.*/
-  private server?: Server<any>;
+  private server?: Server<unknown>;
 
   /** HTTP Router Installed: Tracks if the HTTP router has been installed.*/
   private httpRouterInstalled = false;
@@ -132,7 +120,7 @@ export class Sinwan {
     this.wsRouter = new WSRouter();
     this.tcpRouter = new TCPRouter();
     this.udpRouter = new UDPRouter();
-    this.grpcRouter = new GRPCRouter(options.grpc);
+    this.internalAssets = new InternalAssets(options.internalAssets ?? {});
 
     this.runtime = new Runtime({
       engine: this.engine,
@@ -141,6 +129,11 @@ export class Sinwan {
       globalState: this.sharedState,
       maxPoolSize: options.maxPoolSize,
     });
+
+    // Only install internal assets step when explicitly configured
+    if (options.internalAssets) {
+      this.runtime.use(this.internalAssets);
+    }
 
     if (options.websocket) {
       this.wsRouter.setOptions(options.websocket);
@@ -244,24 +237,23 @@ export class Sinwan {
   }
 
   /**
-   * Register one or more protocol modules (HTTP, WS, TCP, UDP, gRPC).
+   * Register one or more modules or capability providers.
+   *
+   * Modules define protocol routes (HTTP, WS, TCP, UDP, gRPC).
+   * Providers plug external functionality (gRPC, etc.)
+   * into the engine without bundling their dependencies.
    *
    * ```ts
-   * import { createHttpModule, createWSModule } from "./modules";
+   * import { createHttpModule } from "sinwan-engine";
+   * import { sinwanGRPC } from "sinwan-grpc";
    *
    * const apiModule = createHttpModule({
    *   prefix: "/api",
-   *   routes: (app) => {
-   *     app.get("/users", listUsers);
-   *   },
+   *   routes: (app) => app.get("/users", listUsers),
    * });
    *
-   * const chatModule = createWSModule({
-   *   path: "/chat",
-   *   config: { open(ws) { ws.subscribe("room:1"); } },
-   * });
-   *
-   * app.register(apiModule, chatModule);
+   * const app = new Sinwan();
+   * app.register(apiModule, sinwanGRPC);
    * ```
    *
    * @returns `this` for fluent chaining.
@@ -463,6 +455,9 @@ export class Sinwan {
   /**
    * Register a gRPC service route.
    *
+   * When `sinwan-grpc` is installed, this method is augmented with
+   * a fully typed overload (`GRPCServiceConfig`).
+   *
    * ```ts
    * app.grpc("greeter", {
    *   proto: "./proto/greeter.proto",
@@ -478,11 +473,12 @@ export class Sinwan {
    *
    * @returns `this` for fluent chaining.
    */
-  grpc(name: string, config: GRPCServiceConfig): this {
+  grpc(name: string, config: never): this;
+  grpc(name: string, config: unknown): this {
     if (!name || typeof name !== "string") {
       throw new TypeError(`[Sinwan.grpc] Name must be a non-empty string.`);
     }
-    this.grpcRouter.grpc(name, config);
+    getGRPCProvider().registerService(name, config);
     return this;
   }
 
@@ -495,7 +491,7 @@ export class Sinwan {
     event: "open" | "data" | "close" | "drain" | "error",
     handler: TCPHook,
   ): this {
-    this.bus.on(`tcp:${event}`, handler as any);
+    this.bus.on(`tcp:${event}`, handler);
     return this;
   }
 
@@ -508,49 +504,32 @@ export class Sinwan {
     event: "open" | "data" | "drain" | "error" | "close",
     handler: UDPHook,
   ): this {
-    this.bus.on(`udp:${event}`, handler as any);
+    this.bus.on(`udp:${event}`, handler);
     return this;
   }
 
   /**
    * Register a middleware hook for gRPC events.
    * Runs before the route's own handler for "call" events.
+   *
+   * When `sinwan-grpc` is installed, this method is augmented with
+   * fully typed overloads (`GRPCHook`, `GRPCAfterHook`, `GRPCErrorHook`).
+   *
    * @returns `this` for fluent chaining.
    */
-  beforeGRPC(event: "call", handler: GRPCHook): this;
-  beforeGRPC(event: "finish", handler: GRPCAfterHook): this;
-  beforeGRPC(event: "error", handler: GRPCErrorHook): this;
+  beforeGRPC(event: never, handler: never): this;
   beforeGRPC(
     event: "call" | "finish" | "error",
-    handler: GRPCHook | GRPCAfterHook | GRPCErrorHook,
+    handler: (ctx: unknown, ...args: unknown[]) => unknown,
   ): this {
     if (event === "error") {
-      this.bus.on("grpc:error", (ctx, payload: any) =>
-        (handler as GRPCErrorHook)(ctx, payload?.error, payload),
+      this.bus.on("grpc:error", (ctx, payload: unknown) =>
+        handler(ctx, (payload as { error?: unknown })?.error, payload),
       );
       return this;
     }
 
-    this.bus.on(`grpc:${event}`, handler as any);
-    return this;
-  }
-
-  /**
-   * Register global middleware for all HTTP methods.
-   *
-   * ```ts
-   * app.use((ctx) => {
-   *   ctx.res.headers.set("X-Request-Id", crypto.randomUUID());
-   * });
-   * ```
-   *
-   * @returns `this` for fluent chaining.
-   */
-  use(...handlers: RouteHandler[]): this {
-    if (handlers.length === 0) {
-      throw new TypeError(`[Sinwan.use] At least one handler is required.`);
-    }
-    this.httpRouter.use(...handlers);
+    this.bus.on(`grpc:${event}`, handler as EventHandler);
     return this;
   }
 
@@ -606,14 +585,17 @@ export class Sinwan {
   request(
     input: globalThis.Request | string | URL,
     init?: RequestInit,
-    server?: Server<any>,
+    server?: Server<unknown>,
   ): Response | Promise<Response> {
     if (input instanceof globalThis.Request) {
       if (init !== undefined) {
         input = new globalThis.Request(input, init);
       }
       this.ensureHttpRouterInstalled();
-      return this.runtime.fetch(input as any, server || ({} as any));
+      return this.runtime.fetch(
+        input as Request,
+        server ?? ({} as Server<unknown>),
+      );
     }
 
     // Support relative paths by providing a base URL
@@ -624,8 +606,8 @@ export class Sinwan {
 
     this.ensureHttpRouterInstalled();
     return this.runtime.fetch(
-      new globalThis.Request(url, init) as any,
-      server || ({} as any),
+      new globalThis.Request(url, init) as Request,
+      server ?? ({} as Server<unknown>),
     );
   }
 
@@ -654,23 +636,36 @@ export class Sinwan {
   listenTCP<T = unknown>(
     name: string,
     options: TCPListenOptions<T>,
-  ): TCPSocketListener<any> | UnixSocketListener<any> {
-    return this.tcpRouter.listen(this.runtime, name, options);
+  ): Promise<TCPSocketListener<unknown> | UnixSocketListener<unknown>> {
+    this.assertInitialized("listenTCP");
+    return this.transitionToReady(options.port ?? 0, "tcp").then(() => {
+      return this.tcpRouter.listen(this.runtime, name, options) as
+        | TCPSocketListener<unknown>
+        | UnixSocketListener<unknown>;
+    });
   }
 
   connectTCP<T = unknown>(
     name: string,
     options: TCPConnectOptions<T>,
     config: TCPClientConfig,
-  ): Promise<Socket<any>> {
-    return this.tcpRouter.connect(this.runtime, name, options, config);
+  ): Promise<Socket<unknown>> {
+    return this.tcpRouter.connect(
+      this.runtime,
+      name,
+      options,
+      config,
+    ) as Promise<Socket<unknown>>;
   }
 
   listenUDP<T = unknown>(
     name: string,
     options: UDPListenOptions<T>,
   ): Promise<import("./routers/udp-router").SinwanUDPSocket<T>> {
-    return this.udpRouter.listen(this.runtime, name, options);
+    this.assertInitialized("listenUDP");
+    return this.transitionToReady(options.port ?? 0, "udp").then(() => {
+      return this.udpRouter.listen(this.runtime, name, options);
+    });
   }
 
   connectUDP<T = unknown>(
@@ -680,23 +675,48 @@ export class Sinwan {
     return this.udpRouter.connect(this.runtime, name, options);
   }
 
-  listenGRPC(options?: GRPCListenOptions): Promise<GRPCServerHandle>;
+  /**
+   * Start a gRPC server and listen for incoming calls.
+   *
+   * When `sinwan-grpc` is installed, this method is augmented with
+   * fully typed overloads (`GRPCListenOptions` → `GRPCServerHandle`).
+   *
+   * ```ts
+   * await app.listenGRPC({ port: 50051 });
+   * ```
+   */
+  listenGRPC(nameOrOptions?: never, options?: never): Promise<never>;
   listenGRPC(
-    name: string,
-    options?: GRPCListenOptions,
-  ): Promise<GRPCServerHandle>;
-  listenGRPC(
-    nameOrOptions?: string | GRPCListenOptions,
-    options?: GRPCListenOptions,
-  ): Promise<GRPCServerHandle> {
-    if (typeof nameOrOptions === "string") {
-      return this.grpcRouter.listen(this.runtime, nameOrOptions, options);
-    }
-    return this.grpcRouter.listen(this.runtime, nameOrOptions);
+    nameOrOptions?: string | Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<unknown> {
+    const opts = typeof nameOrOptions === "string" ? options : nameOrOptions;
+    const port = (opts?.port as number | string | undefined) ?? 50051;
+    this.assertInitialized("listenGRPC");
+
+    const provider = getGRPCProvider();
+    const readyPromise = this.transitionToReady(port, "grpc");
+
+    const handlePromise =
+      typeof nameOrOptions === "string"
+        ? provider.listen(this.runtime, nameOrOptions, options)
+        : provider.listen(this.runtime, nameOrOptions);
+
+    return readyPromise
+      .then(() => handlePromise)
+      .then((handle: unknown) => {
+        this.lifecycle.on("shutdown", () => {
+          (handle as { stop: () => void }).stop();
+        });
+        return handle;
+      });
   }
 
   /**
    * Create a gRPC client to connect to a remote service.
+   *
+   * When `sinwan-grpc` is installed, this method is augmented with
+   * a fully typed overload (`GRPCClientConfig` → `GRPCClient<S>`).
    *
    * ```ts
    * const client = app.connectGRPC({
@@ -707,10 +727,9 @@ export class Sinwan {
    * });
    * ```
    */
-  connectGRPC<ServiceShape extends Record<string, any> = Record<string, any>>(
-    config: GRPCClientConfig,
-  ): GRPCClient<ServiceShape> {
-    return GRPCClient.create<ServiceShape>(config);
+  connectGRPC(config: never): unknown;
+  connectGRPC(config: unknown): unknown {
+    return getGRPCProvider().connect(config);
   }
 
   /**
@@ -738,6 +757,7 @@ export class Sinwan {
       server: Server<WSData>;
     }) => void,
   ): Promise<Server<WSData>> {
+    const hasHttpRoutes = this.httpRouterInstalled;
     this.ensureHttpRouterInstalled();
 
     // Install ws-upgrade step only when WS routes exist (zero cost otherwise)
@@ -768,7 +788,11 @@ export class Sinwan {
 
     // Transition to READY phase (awaiting is critical for deterministic startup)
     try {
-      await this.lifecycle.ready({ port, server: this.server });
+      await this.lifecycle.ready({
+        port,
+        server: this.server,
+        protocol: this.wsRouter.hasRoutes() && !hasHttpRoutes ? "ws" : "http",
+      });
     } catch (error) {
       // Server started but lifecycle failed - stop server and throw
       this.server.stop(true);
@@ -781,13 +805,13 @@ export class Sinwan {
 
     if (callback) {
       try {
-        callback({ port, server: this.server });
+        callback({ port, server: this.server as Server<WSData> });
       } catch (error) {
         console.error("[Sinwan] Listen callback error:", error);
       }
     }
 
-    return this.server;
+    return this.server as Server<WSData>;
   }
 
   /**
@@ -825,25 +849,55 @@ export class Sinwan {
   }
 
   /**
+   * Assert that Sinwan.create() has been called (lifecycle is past IDLE).
+   * Throws if the app is still in IDLE state.
+   */
+  private assertInitialized(method: string): void {
+    if (this.lifecycle.getState() === LifecycleState.IDLE) {
+      throw new Error(
+        `[Sinwan.${method}] ` +
+          `Lifecycle is in "idle" state. Call "await Sinwan.create()" first to initialize the app.`,
+      );
+    }
+  }
+
+  /**
+   * Transition from INIT to READY if needed.
+   * Awaits all ready event listeners before resolving.
+   * No-op if already READY or past READY.
+   */
+  private async transitionToReady(
+    port: number | string,
+    protocol: "grpc" | "tcp" | "udp",
+  ): Promise<void> {
+    if (this.lifecycle.getState() === LifecycleState.INIT) {
+      await this.lifecycle.ready({ port, protocol });
+    }
+  }
+
+  /**
    * Gracefully shut down the server.
    * @param closeConn If true, immediately close all active connections.
    */
   async stop(closeConn: boolean = false): Promise<void> {
-    if (!this.server) {
-      this.tcpRouter.stop(closeConn);
-      this.udpRouter.stop(this.runtime);
-      await this.grpcRouter.stop();
-      return;
+    const hasActiveServer = this.server !== undefined;
+
+    if (this.lifecycle.is(LifecycleState.READY)) {
+      await this.lifecycle.shutdown();
     }
 
-    await this.lifecycle.shutdown();
-
-    this.server.stop(closeConn);
+    if (hasActiveServer) {
+      this.server!.stop(closeConn);
+    }
     this.tcpRouter.stop(closeConn);
     this.udpRouter.stop(this.runtime);
-    await this.grpcRouter.stop();
+    if (hasGRPCProvider()) {
+      await getGRPCProvider().stop();
+    }
 
-    await this.lifecycle.destroy();
+    if (this.lifecycle.is(LifecycleState.SHUTDOWN)) {
+      await this.lifecycle.destroy();
+    }
 
     this.server = undefined;
   }

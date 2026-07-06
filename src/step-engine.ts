@@ -95,6 +95,7 @@ export class StepEngine {
             outcome === "responded_early"
           )
             break;
+          if (outcome === "skipped") i++; // Skip the next step
         } catch (error) {
           await this.handleStepError(step, ctx, bus, error);
           throw error;
@@ -152,8 +153,14 @@ export class StepEngine {
     }
 
     if (outcome === "continue") {
+      if (ctx.isFailed()) {
+        await this.handleStepError(step, ctx, bus, ctx.failError);
+        throw ctx.failError;
+      }
       if (ctx.hasResponded()) outcome = "responded";
       else if (ctx.isStopped()) outcome = "stopped";
+      else if (ctx.isRespondEarly()) outcome = "responded_early";
+      else if (ctx.isSkipped()) outcome = "skipped";
     }
 
     if (bus.hasListeners("step:end")) {
@@ -204,8 +211,14 @@ export class StepEngine {
     }
 
     if (outcome === "continue") {
+      if (ctx.isFailed()) {
+        this.handleStepErrorSync(step, ctx, bus, ctx.failError);
+        throw ctx.failError;
+      }
       if (ctx.hasResponded()) outcome = "responded";
       else if (ctx.isStopped()) outcome = "stopped";
+      else if (ctx.isRespondEarly()) outcome = "responded_early";
+      else if (ctx.isSkipped()) outcome = "skipped";
     }
 
     if (bus.hasListeners("step:end")) {

@@ -7,6 +7,7 @@
 import { Context } from "./context/context";
 import { buildResponse } from "./response";
 import type { ErrorHandler } from "./error-handler";
+import type { ErrorNormalizer } from "./error-normalizer";
 import type { EventBus } from "./event-bus";
 import type { StepEngine } from "./step-engine";
 import type { Plugin } from "./types";
@@ -17,7 +18,7 @@ export interface RuntimeConfig {
   engine: StepEngine;
   bus: EventBus;
   errorHandler: ErrorHandler;
-  globalState: Map<string, any>;
+  globalState: Map<string, unknown>;
   maxPoolSize?: number;
 }
 
@@ -25,7 +26,7 @@ export class Runtime {
   public readonly engine: StepEngine;
   public readonly bus: EventBus;
   public readonly errorHandler: ErrorHandler;
-  private readonly globalState: Map<string, any>;
+  private readonly globalState: Map<string, unknown>;
   private readonly contextPool: Context[] = [];
   private readonly maxPoolSize: number;
 
@@ -39,6 +40,11 @@ export class Runtime {
     this.maxPoolSize = params.maxPoolSize ?? 1000;
   }
 
+  /** Shared ErrorNormalizer accessible by all protocol routers. */
+  get errorNormalizer(): ErrorNormalizer {
+    return this.errorHandler.normalizer;
+  }
+
   /**
    * Install a Plugin.
    */
@@ -50,7 +56,7 @@ export class Runtime {
    * The main fetch handler for Bun.serve()
    * Automatically creates or reuses a Context, executes the pipeline, and returns a Response.
    */
-  fetch(req: Request, server?: Server<any>): Response | Promise<Response> {
+  fetch(req: Request, server?: Server<unknown>): Response | Promise<Response> {
     const ctx = this.acquireContext(server);
     ctx.setReq(req);
 
@@ -135,9 +141,12 @@ export class Runtime {
       body instanceof ReadableStream ||
       (body &&
         typeof body === "object" &&
-        (Symbol.asyncIterator in body || (body as any)._isSSE));
+        (Symbol.asyncIterator in body ||
+          (typeof (body as { _isSSE?: unknown })._isSSE === "boolean" &&
+            (body as { _isSSE: boolean })._isSSE)));
 
     if (!isPersistent) {
+      ctx.dispose();
       this.releaseContext(ctx);
     } else {
       // The Context itself must handle its own release when the stream closes.
@@ -168,7 +177,7 @@ export class Runtime {
     await this.errorHandler.handle(error, ctx);
   }
 
-  acquireContext(server?: Server<any>): Context {
+  acquireContext(server?: Server<unknown>): Context {
     const ctx = this.contextPool.pop();
     if (ctx) {
       ctx.reset({

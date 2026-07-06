@@ -23,6 +23,9 @@ import type {
   ListenerOptions,
 } from "./types";
 
+/** Universal listener type for EventEmitter-compatible handlers. */
+type Listener = (...args: unknown[]) => unknown;
+
 export interface EventBusOptions {
   captureRejections?: boolean;
   maxListeners?: number;
@@ -61,7 +64,7 @@ export class EventBus {
   private hasListenersCacheVersion: number = 0;
 
   private readonly abortHandlers = new WeakMap<
-    (...args: any[]) => void,
+    Listener,
     { signal: AbortSignal; abortHandler: () => void }
   >();
 
@@ -81,31 +84,22 @@ export class EventBus {
     // Guard against unbounded listener growth (memory leak protection)
     this.emitter.setMaxListeners(options.maxListeners ?? 100);
 
-    // Initialize dispatch cache (disabled if size is 0)
-    this.dispatchCache =
-      this.options.maxDispatchCacheSize > 0 ? new Map() : new Map();
+    // Initialize dispatch cache
+    this.dispatchCache = new Map();
   }
 
   // ─── Listener Management (Node-style) ────────────────────
 
   on<E extends string>(
     event: E,
-    handler: EventHandler<E>,
+    handler: EventHandler,
     options?: ListenerOptions,
   ): this;
-  on(
-    event: symbol,
-    handler: (...args: any[]) => void,
-    options?: ListenerOptions,
-  ): this;
-  on(
-    event: string,
-    handler: (...args: any[]) => void,
-    options?: ListenerOptions,
-  ): this;
+  on(event: symbol, handler: Listener, options?: ListenerOptions): this;
+  on(event: string, handler: Listener, options?: ListenerOptions): this;
   on(
     event: string | symbol,
-    handler: (...args: any[]) => void,
+    handler: Listener,
     options?: ListenerOptions,
   ): this;
   on(
@@ -123,12 +117,12 @@ export class EventBus {
 
   addListener<E extends string>(
     event: E,
-    handler: EventHandler<E>,
+    handler: EventHandler,
     options?: ListenerOptions,
   ): this;
   addListener(
     event: symbol,
-    handler: (...args: any[]) => void,
+    handler: Listener,
     options?: ListenerOptions,
   ): this;
   addListener(
@@ -136,19 +130,15 @@ export class EventBus {
     handler: (...args: any[]) => void,
     options?: ListenerOptions,
   ): this {
-    return this.on(event, handler as any, options);
+    return this.on(event, handler, options);
   }
 
   once<E extends string>(
     event: E,
-    handler: EventHandler<E>,
+    handler: EventHandler,
     options?: ListenerOptions,
   ): this;
-  once(
-    event: symbol,
-    handler: (...args: any[]) => void,
-    options?: ListenerOptions,
-  ): this;
+  once(event: symbol, handler: Listener, options?: ListenerOptions): this;
   once(
     event: string | symbol,
     handler: (...args: any[]) => void,
@@ -164,12 +154,12 @@ export class EventBus {
 
   prependListener<E extends string>(
     event: E,
-    handler: EventHandler<E>,
+    handler: EventHandler,
     options?: ListenerOptions,
   ): this;
   prependListener(
     event: symbol,
-    handler: (...args: any[]) => void,
+    handler: Listener,
     options?: ListenerOptions,
   ): this;
   prependListener(
@@ -187,12 +177,12 @@ export class EventBus {
 
   prependOnceListener<E extends string>(
     event: E,
-    handler: EventHandler<E>,
+    handler: EventHandler,
     options?: ListenerOptions,
   ): this;
   prependOnceListener(
     event: symbol,
-    handler: (...args: any[]) => void,
+    handler: Listener,
     options?: ListenerOptions,
   ): this;
   prependOnceListener(
@@ -244,8 +234,8 @@ export class EventBus {
     return this.emitter.listenerCount(event);
   }
 
-  rawListeners(event: string | symbol): Array<(...args: any[]) => void> {
-    return this.emitter.rawListeners(event) as Array<(...args: any[]) => void>;
+  rawListeners(event: string | symbol): Listener[] {
+    return this.emitter.rawListeners(event) as Listener[];
   }
 
   setMaxListeners(count: number): this {
@@ -378,11 +368,11 @@ export class EventBus {
     options?: EmitOptions,
   ): Promise<void> {
     const dispatchEvents = this.getDispatchEvents(event);
-    const promises: Promise<any>[] = [];
+    const promises: Promise<unknown>[] = [];
 
     for (let i = 0; i < dispatchEvents.length; i++) {
       const dispatchEvent = dispatchEvents[i]!;
-      const listeners = this.emitter.rawListeners(dispatchEvent);
+      const listeners = this.emitter.rawListeners(dispatchEvent) as Listener[];
       if (listeners.length === 0) continue;
 
       const meta = this.buildMeta(dispatchEvent, event, ctx, options);
@@ -392,8 +382,7 @@ export class EventBus {
         const listener = listeners[j]!;
         try {
           const result = listener.call(this.emitter, ctx, payload, meta);
-          if ((result as any) instanceof Promise)
-            promises.push(result as unknown as Promise<unknown>);
+          if (result instanceof Promise) promises.push(result);
         } catch (error) {
           this.emitErrorMonitor(error, ctx, meta);
         }
@@ -428,7 +417,7 @@ export class EventBus {
       const dispatchEvent = dispatchEvents[dispatchIndex];
       if (!dispatchEvent) continue;
 
-      const listeners = this.emitter.rawListeners(dispatchEvent);
+      const listeners = this.emitter.rawListeners(dispatchEvent) as Listener[];
       if (listeners.length === 0) continue;
 
       const meta = this.buildMeta(dispatchEvent, event, ctx, options);
@@ -449,12 +438,7 @@ export class EventBus {
         if (ctx.isStopped()) return "STOP";
 
         try {
-          const result = listener.call(
-            this.emitter,
-            ctx,
-            payload,
-            meta,
-          ) as unknown;
+          const result = listener.call(this.emitter, ctx, payload, meta);
           const resolved = await result;
           if (resolved === "STOP") return "STOP";
           if (ctx.isStopped()) return "STOP";
@@ -484,7 +468,7 @@ export class EventBus {
       const dispatchEvent = dispatchEvents[dispatchIndex];
       if (!dispatchEvent) continue;
 
-      const listeners = this.emitter.rawListeners(dispatchEvent);
+      const listeners = this.emitter.rawListeners(dispatchEvent) as Listener[];
       if (listeners.length === 0) continue;
 
       const meta = this.buildMeta(dispatchEvent, event, ctx, options);
@@ -505,12 +489,7 @@ export class EventBus {
         if (ctx.isStopped()) return "STOP";
 
         try {
-          const result = listener.call(
-            this.emitter,
-            ctx,
-            payload,
-            meta,
-          ) as unknown;
+          const result = listener.call(this.emitter, ctx, payload, meta);
 
           if (
             typeof result === "object" &&
@@ -617,17 +596,17 @@ export class EventBus {
 
   private wrapWithCleanup(
     event: string | symbol,
-    handler: (...args: any[]) => void,
+    handler: Listener,
     options: ListenerOptions | undefined,
     isOnce: boolean,
-  ): (...args: any[]) => void {
+  ): Listener {
     const signal = options?.signal;
     if (!signal) return handler;
 
     if (signal.aborted) return () => {};
 
     // Define wrapped first so abortHandler can reference it
-    let wrapped: (...args: any[]) => void;
+    let wrapped: Listener;
     let abortHandler: () => void;
     let cleanedUp = false;
 
@@ -644,7 +623,7 @@ export class EventBus {
       this.emitter.off(event, wrapped);
     };
 
-    wrapped = (...args: any[]) => {
+    wrapped = (...args: unknown[]) => {
       cleanup();
       return handler(...args);
     };
@@ -662,9 +641,7 @@ export class EventBus {
   }
 
   private trace(ctx: Context, meta: EventMeta, payload: unknown): void {
-    if (typeof (ctx as Context).recordEvent === "function") {
-      ctx.recordEvent(meta, payload);
-    }
+    ctx.recordEvent(meta, payload);
   }
 
   private emitErrorMonitor(
@@ -672,7 +649,7 @@ export class EventBus {
     ctx: Context,
     meta: EventMeta,
   ): void {
-    const listeners = this.emitter.rawListeners(errorMonitor);
+    const listeners = this.emitter.rawListeners(errorMonitor) as Listener[];
     for (let i = 0; i < listeners.length; i++) {
       const listener = listeners[i]!;
       try {
@@ -692,7 +669,11 @@ export class EventBus {
   ): void {
     if (!this.options.captureRejections) return;
 
-    const handler = (this.emitter as any)[captureRejectionSymbol];
+    const handler = (
+      this.emitter as EventEmitter & {
+        [captureRejectionSymbol]?: (...args: unknown[]) => void;
+      }
+    )[captureRejectionSymbol];
     if (typeof handler === "function") {
       try {
         handler.call(this.emitter, error, event, ctx, payload, meta);

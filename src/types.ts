@@ -79,7 +79,7 @@ export interface ListenerOptions {
   signal?: AbortSignal;
 }
 
-export type EventHandler<E extends string = string, P = any> = (
+export type EventHandler<P = unknown> = (
   ctx: Context,
   payload?: P,
   meta?: EventMeta,
@@ -218,10 +218,7 @@ export interface InternalEventPayloads {
 }
 
 export type InternalEventMap = {
-  [K in keyof InternalEventPayloads]: EventHandler<
-    K & string,
-    InternalEventPayloads[K]
-  >;
+  [K in keyof InternalEventPayloads]: EventHandler<InternalEventPayloads[K]>;
 };
 
 // ─── Error System ───────────────────────────────────────────

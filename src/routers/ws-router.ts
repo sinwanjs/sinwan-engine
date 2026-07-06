@@ -36,7 +36,7 @@ export type Compressor =
 export type WSUpgradeHandler = (ctx: Context) => Promise<void> | void;
 
 /** Handler called on WS lifecycle events. */
-export type WSHook = (ws: Context, ...args: any[]) => Promise<void> | void;
+export type WSHook = (ws: Context, ...args: unknown[]) => Promise<void> | void;
 
 export type WSMessageHook = (
   ws: Context,
@@ -310,14 +310,14 @@ export class WSRouter implements Plugin {
     console.error("[sinwan:ws] Unhandled hook error:", err);
   }
 
-  private runWSHook(
+  private runWSHook<A extends unknown[]>(
     runtime: Runtime,
     ws: ServerWebSocket<WSSData>,
     event: string,
     payload: unknown,
-    config?: WSRouteConfig,
-    hook?: (ctx: Context, ...args: any[]) => Promise<void> | void,
-    ...args: any[]
+    config: WSRouteConfig | undefined,
+    hook: ((ctx: Context, ...args: A) => Promise<void> | void) | undefined,
+    ...args: A
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
