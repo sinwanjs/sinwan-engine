@@ -1,14 +1,15 @@
 {
   "name": "sinwan-engine",
   "version": "0.1.0",
-  "description": "Sinwan Engine is a powerful and flexible JavaScript framework for building high-performance web applications with ease.",
+  "description": "Server framework for building modern distributed applications. Unified runtime for HTTP, WebSocket, TCP, UDP, and gRPC — APIs, real-time systems, microservices, and event-driven apps from a single engine.",
   "module": "dist/index.js",
   "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "bun run build.ts"
@@ -31,5 +32,37 @@
     }
   },
   "dependencies": {},
-  "private": true
+  "files": [
+    "dist",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "sinwan-engine",
+    "bun",
+    "backend",
+    "framework",
+    "api",
+    "server",
+    "microservices",
+    "rest",
+    "websocket",
+    "tcp",
+    "udp",
+    "grpc",
+    "realtime",
+    "event-driven",
+    "sse",
+    "typescript"
+  ],
+  "author": "Mohammed Ben Cheikh",
+  "licenseFilename": "LICENSE",
+  "bugs": "https://github.com/sinwanjs/sinwan-engine/issues",
+  "homepage": "https://engine.sinwanjs.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sinwanjs/sinwan-engine"
+  },
+  "license": "MIT"
 }
