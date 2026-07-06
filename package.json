@@ -12,14 +12,20 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "bun run build.ts"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "build": "bun run build.ts",
+    "prepublishOnly": "bun run typecheck && bun run clean && bun run build"
   },
   "devDependencies": {
+    "sinwan-grpc": "link:sinwan-grpc",
+    "typescript": "^6.0.3",
     "@types/bun": "latest",
     "happy-dom": "^20.9.0"
   },
   "peerDependencies": {
-    "typescript": "^5",
+    "typescript": "^6.0.3",
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1"
   },
