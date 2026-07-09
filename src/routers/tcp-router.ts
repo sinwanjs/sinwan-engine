@@ -1,4 +1,9 @@
-import type { Socket, TCPSocketListener, TLSOptions, UnixSocketListener } from "bun";
+import type {
+  Socket,
+  TCPSocketListener,
+  TLSOptions,
+  UnixSocketListener,
+} from "bun";
 // import type { TLSOptions } from "bun";
 import type { Context, TCPData } from "../context/context";
 import type { Runtime } from "../runtime";
@@ -246,7 +251,15 @@ export class TCPRouter {
 
     // TCP open goes through the StepEngine pipeline (auth, middleware, etc.)
     if (event === "tcp:open") {
-      const runResult = runtime.engine.run(ctx, runtime.bus);
+      let runResult: unknown;
+      try {
+        runResult = runtime.engine.run(ctx, runtime.bus);
+      } catch (err) {
+        void this.tcpHookError(runtime, err, ctx);
+        ctx.dispose();
+        runtime.releaseContext(ctx);
+        return;
+      }
 
       const finalizeAndRunHook = async () => {
         if (runResult instanceof Promise) await runResult;

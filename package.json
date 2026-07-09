@@ -1,18 +1,15 @@
 {
   "name": "sinwan-engine",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Server framework for building modern distributed applications. Unified runtime for HTTP, WebSocket, TCP, UDP, and gRPC — APIs, real-time systems, microservices, and event-driven apps from a single engine.",
   "module": "dist/index.js",
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./package.json": "./package.json"
+    "types": "./dist/index.d.ts",
+    "default": "./dist/index.js"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --coverage",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "build": "bun run build.ts",

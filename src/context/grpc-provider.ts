@@ -59,3 +59,11 @@ export function getGRPCProvider(): GRPCProvider {
 export function hasGRPCProvider(): boolean {
   return grpcProvider !== null;
 }
+
+/**
+ * Reset the gRPC provider registry.
+ * Intended for testing and hot-reload scenarios.
+ */
+export function resetGRPCProvider(): void {
+  grpcProvider = null;
+}

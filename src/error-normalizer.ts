@@ -61,13 +61,21 @@ export class ErrorNormalizer {
 
     if (typeof error === "string") {
       return {
-        message: isProduction ? "Internal Server Error" : error,
+        message: showMessageInProduction
+          ? error
+          : isProduction
+            ? "Internal Server Error"
+            : error,
       };
     }
 
     if (isErrorLike(error)) {
       return {
-        message: isProduction ? "Internal Server Error" : error.message,
+        message: showMessageInProduction
+          ? error.message
+          : isProduction
+            ? "Internal Server Error"
+            : error.message,
         statusCode:
           typeof error.statusCode === "number" ? error.statusCode : undefined,
       };

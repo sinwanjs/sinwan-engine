@@ -73,6 +73,7 @@ export interface EmitOptions {
   source?: EventSource;
   requestId?: string;
   timestamp?: number;
+  forceDelivery?: boolean;
 }
 
 export interface ListenerOptions {

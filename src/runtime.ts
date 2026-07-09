@@ -130,7 +130,7 @@ export class Runtime {
           "request:end",
           ctx,
           { durationMs },
-          this.runtimeEmitOptions,
+          { ...this.runtimeEmitOptions, forceDelivery: true },
         );
       }
     }

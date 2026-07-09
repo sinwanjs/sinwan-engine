@@ -56,22 +56,32 @@ export class StepEngine {
     const stepCount = this.steps.length;
     if (stepCount === 0 || ctx.isStopped()) return;
 
-    // Fast path: single sync step with no event listeners (most common)
+    // Fast path: single step with no step:start listeners (most common)
     if (stepCount === 1 && !bus.hasListeners("step:start")) {
       const step = this.steps[0]!;
-      const r = step.run(ctx, bus);
-      if (!(r instanceof Promise)) {
-        try {
+      try {
+        const r = step.run(ctx, bus);
+        if (!(r instanceof Promise)) {
           this.handleResultSync(step, ctx, bus, r);
           return;
-        } catch (error) {
-          this.handleStepErrorSync(step, ctx, bus, error);
-          throw error;
         }
+        // Single async step — handle inline to avoid double execution
+        return (async () => {
+          try {
+            const result = await r;
+            await this.handleResult(step, ctx, bus, result);
+          } catch (error) {
+            await this.handleStepError(step, ctx, bus, error);
+            throw error;
+          }
+        })();
+      } catch (error) {
+        this.handleStepErrorSync(step, ctx, bus, error);
+        throw error;
       }
     }
 
-    // General path (also handles single async step)
+    // General path (multiple steps or step:start listeners)
     return this.runSteps(ctx, bus, 0, stepCount);
   }
 
@@ -143,7 +153,6 @@ export class StepEngine {
         ctx.stop();
         outcome = "stopped";
       } else if (result.type === "error") {
-        await this.handleStepError(step, ctx, bus, result.error);
         throw result.error;
       } else if (result.type === "skip") {
         outcome = "skipped";
@@ -154,7 +163,6 @@ export class StepEngine {
 
     if (outcome === "continue") {
       if (ctx.isFailed()) {
-        await this.handleStepError(step, ctx, bus, ctx.failError);
         throw ctx.failError;
       }
       if (ctx.hasResponded()) outcome = "responded";
@@ -168,7 +176,7 @@ export class StepEngine {
         "step:end",
         ctx,
         { name: step.name, outcome },
-        { source: "step-engine" },
+        { source: "step-engine", forceDelivery: true },
       );
     }
 
@@ -200,7 +208,6 @@ export class StepEngine {
         ctx.stop();
         outcome = "stopped";
       } else if (result.type === "error") {
-        this.handleStepErrorSync(step, ctx, bus, result.error);
         throw result.error;
       } else if (result.type === "skip") {
         outcome = "skipped";
@@ -212,7 +219,6 @@ export class StepEngine {
 
     if (outcome === "continue") {
       if (ctx.isFailed()) {
-        this.handleStepErrorSync(step, ctx, bus, ctx.failError);
         throw ctx.failError;
       }
       if (ctx.hasResponded()) outcome = "responded";
@@ -226,7 +232,7 @@ export class StepEngine {
         "step:end",
         ctx,
         { name: step.name, outcome },
-        { source: "step-engine" },
+        { source: "step-engine", forceDelivery: true },
       );
     }
 

@@ -65,16 +65,17 @@ export class EventBus {
 
   private readonly abortHandlers = new WeakMap<
     Listener,
-    { signal: AbortSignal; abortHandler: () => void }
+    { signal: AbortSignal; abortHandler: () => void; wrapped: Listener }
   >();
 
   constructor(options: EventBusOptions = {}) {
     this.options = {
+      ...options,
+      captureRejections: options.captureRejections ?? false,
       enableWildcards: options.enableWildcards !== false,
       wildcardDelimiter: options.wildcardDelimiter ?? ":",
       maxDispatchCacheSize: options.maxDispatchCacheSize ?? 500,
       maxHasListenersCacheSize: options.maxHasListenersCacheSize ?? 500,
-      ...options,
     };
 
     this.emitter = new EventEmitter({
@@ -199,15 +200,14 @@ export class EventBus {
   }
 
   off(event: string | symbol, handler: (...args: any[]) => void): this {
-    // We need to find if we have a wrapped version of this handler
-    // Since we don't store a map of original -> wrapped for all handlers (that would be expensive),
-    // we only do it for those with AbortSignals.
     const entry = this.abortHandlers.get(handler);
     if (entry) {
       entry.signal.removeEventListener("abort", entry.abortHandler);
       this.abortHandlers.delete(handler);
+      this.emitter.off(event, entry.wrapped);
+    } else {
+      this.emitter.off(event, handler);
     }
-    this.emitter.off(event, handler);
     this.invalidateHasListenersFor(event);
     return this;
   }
@@ -382,7 +382,10 @@ export class EventBus {
         const listener = listeners[j]!;
         try {
           const result = listener.call(this.emitter, ctx, payload, meta);
-          if (result instanceof Promise) promises.push(result);
+          if (result instanceof Promise)
+            promises.push(
+              result.catch((error) => this.emitErrorMonitor(error, ctx, meta)),
+            );
         } catch (error) {
           this.emitErrorMonitor(error, ctx, meta);
         }
@@ -435,13 +438,13 @@ export class EventBus {
         const listener = listeners[listenerIndex];
         if (!listener) continue;
 
-        if (ctx.isStopped()) return "STOP";
+        if (!options?.forceDelivery && ctx.isStopped()) return "STOP";
 
         try {
           const result = listener.call(this.emitter, ctx, payload, meta);
           const resolved = await result;
           if (resolved === "STOP") return "STOP";
-          if (ctx.isStopped()) return "STOP";
+          if (!options?.forceDelivery && ctx.isStopped()) return "STOP";
         } catch (error) {
           this.handleRejection(error, dispatchEvent, ctx, payload, meta);
           throw error;
@@ -486,7 +489,7 @@ export class EventBus {
         const listener = listeners[listenerIndex];
         if (!listener) continue;
 
-        if (ctx.isStopped()) return "STOP";
+        if (!options?.forceDelivery && ctx.isStopped()) return "STOP";
 
         try {
           const result = listener.call(this.emitter, ctx, payload, meta);
@@ -504,7 +507,7 @@ export class EventBus {
           }
 
           if (result === "STOP") return "STOP";
-          if (ctx.isStopped()) return "STOP";
+          if (!options?.forceDelivery && ctx.isStopped()) return "STOP";
         } catch (error) {
           this.emitErrorMonitor(error, ctx, meta);
           throw error;
@@ -632,7 +635,7 @@ export class EventBus {
     signal.addEventListener("abort", abortHandler, { once: true });
 
     // Store for manual cleanup via off()
-    this.abortHandlers.set(handler, { signal, abortHandler });
+    this.abortHandlers.set(handler, { signal, abortHandler, wrapped });
 
     // Copy properties for identification
     Object.defineProperty(wrapped, "name", { value: handler.name });

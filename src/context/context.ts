@@ -245,6 +245,8 @@ export class Context {
    * Reset the context for reuse in a pool.
    */
   reset(options: ContextOptions): void {
+    const oldBus = this._bus;
+
     this.req = undefined as unknown as Request;
     this.pathname = "";
     this.server = options.server;
@@ -262,6 +264,8 @@ export class Context {
     this._parsedBody = undefined;
     this._formData = undefined;
     this._bus = options.bus;
+    this.maxBodySize = 10 * 1024 * 1024;
+    this.errorHandler = options.errorHandler;
     this._onDisposeCallbacks.length = 0;
     this._released = false;
 
@@ -279,6 +283,19 @@ export class Context {
     if (this._eventTrace) this._eventTrace.length = 0;
     this._traceStart = 0;
     this._traceSize = 0;
+
+    // Remove scoped handlers from the old bus before clearing tracking
+    if (this._scopedHandlers && this._scopedHandlers.size > 0) {
+      if (oldBus) {
+        for (const [event, handlerMap] of this._scopedHandlers.entries()) {
+          for (const wrappedSet of handlerMap.values()) {
+            for (const wrapped of wrappedSet) {
+              oldBus.off(event, wrapped);
+            }
+          }
+        }
+      }
+    }
     this._scopedHandlers = undefined;
   }
 
@@ -286,7 +303,7 @@ export class Context {
    * Handle an error that occurred during request processing.
    * This method is called by the server when an error is thrown.
    */
-  catch(error: unknown, ctx: Context, showMessageInProduction: boolean) {
+  catch(error: unknown, ctx: Context, showMessageInProduction: boolean): void {
     this.errorHandler.handle(error, ctx, showMessageInProduction);
   }
 
@@ -524,6 +541,8 @@ export class Context {
   ): void {
     const { status = 302, keyParam = "redirect" } = options;
 
+    this.guardDoubleResponse();
+
     // Generate unique temporary key
     const dataKey = `id_${crypto.randomUUID()}`;
 
@@ -533,8 +552,6 @@ export class Context {
     // Build safe URL
     const url = new URL(path, this.req.url);
     url.searchParams.set(keyParam, dataKey);
-
-    this.guardDoubleResponse();
 
     this.headers.set("Location", url.toString());
 
@@ -1013,7 +1030,7 @@ export class Context {
     }
 
     this._status |= Context.RESPONDED;
-    this.stop();
+    this._status |= Context.STOPPED;
 
     // Hot-path: only build payload and emit when someone is listening
     if (this._bus && this._bus.hasListeners("response:set")) {
@@ -1027,9 +1044,11 @@ export class Context {
           statusCode: this.statusCode,
           contentType: finalContentType,
         },
-        { source: "context" },
+        { source: "context", forceDelivery: true },
       );
     }
+
+    this.emitStop();
   }
 
   // ─── Utilities ──────────────────────────────────────────
@@ -1390,9 +1409,14 @@ export class Context {
   /** Signal that step execution should halt after the current step. */
   stop(): void {
     this._status |= Context.STOPPED;
+    this.emitStop();
+  }
+
+  private emitStop(): void {
     if (this._bus && this._bus.hasListeners("context:stop")) {
       this._bus.emitSync("context:stop", this, undefined, {
         source: "context",
+        forceDelivery: true,
       });
     }
   }
@@ -1806,6 +1830,7 @@ export class Context {
     const self = this;
     const reader = stream.getReader();
     let pump: (() => void) | null = null;
+    let closed = false;
 
     return new ReadableStream({
       start(controller) {
@@ -1813,23 +1838,31 @@ export class Context {
           reader.read().then(
             ({ done, value }) => {
               if (done) {
-                controller.close();
-                queueMicrotask(() => self.dispose());
+                if (!closed) {
+                  closed = true;
+                  controller.close();
+                  queueMicrotask(() => self.dispose());
+                }
                 return;
               }
-              controller.enqueue(value);
-              if (
-                controller.desiredSize !== null &&
-                controller.desiredSize <= 0
-              ) {
-                // Consumer applying backpressure — wait for pull()
-                return;
+              if (!closed) {
+                controller.enqueue(value);
+                if (
+                  controller.desiredSize !== null &&
+                  controller.desiredSize <= 0
+                ) {
+                  // Consumer applying backpressure — wait for pull()
+                  return;
+                }
+                if (pump) pump();
               }
-              if (pump) pump();
             },
             (err) => {
-              controller.error(err);
-              queueMicrotask(() => self.dispose());
+              if (!closed) {
+                closed = true;
+                controller.error(err);
+                queueMicrotask(() => self.dispose());
+              }
             },
           );
         };
@@ -1839,6 +1872,7 @@ export class Context {
         if (pump) pump();
       },
       cancel() {
+        closed = true;
         reader.cancel().catch(() => {});
         queueMicrotask(() => self.dispose());
       },
