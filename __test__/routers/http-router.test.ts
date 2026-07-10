@@ -504,9 +504,15 @@ describe("HTTPRouter", () => {
 
   function resolveReq(router: HTTPRouter, method: string, url: string) {
     const protoIdx = url.indexOf("://");
-    const start = protoIdx !== -1 ? url.indexOf("/", protoIdx + 3) : 0;
-    const end = url.length;
-    return router.resolve(method, url, start, end);
+    const pathStart = protoIdx !== -1 ? url.indexOf("/", protoIdx + 3) : 0;
+    const queryStart = url.indexOf("?", pathStart);
+    const pathname =
+      pathStart === -1
+        ? "/"
+        : queryStart === -1
+          ? url.slice(pathStart)
+          : url.slice(pathStart, queryStart);
+    return router.resolve(method, pathname);
   }
 
   describe("resolve()", () => {

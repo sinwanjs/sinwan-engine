@@ -109,42 +109,6 @@ function splitPath(path: string): string[] {
   return path.split("/").filter(Boolean);
 }
 
-function getPathnameIndices(url: string): { start: number; end: number } {
-  let start = 0;
-  const protoIdx = url.indexOf("://");
-  if (protoIdx !== -1) {
-    start = url.indexOf("/", protoIdx + 3);
-    if (start === -1) return { start: 0, end: 0 };
-  }
-
-  let end = url.length;
-  for (let i = start; i < url.length; i += 1) {
-    const cc = url.charCodeAt(i);
-    if (cc === 63 || cc === 35) {
-      end = i;
-      break;
-    }
-  }
-
-  if (end - start > 1 && url.charCodeAt(end - 1) === 47) {
-    end -= 1;
-  }
-
-  return { start, end };
-}
-
-function segmentPathRaw(url: string, start: number, end: number): string[] {
-  const segments: string[] = [];
-  let s = url.charCodeAt(start) === 47 ? start + 1 : start;
-  for (let i = s; i <= end; i += 1) {
-    if (i === end || url.charCodeAt(i) === 47) {
-      if (i > s) segments.push(url.slice(s, i));
-      s = i + 1;
-    }
-  }
-  return segments;
-}
-
 function segmentPath(pathname: string): string[] {
   const segments: string[] = [];
   let start = pathname.charCodeAt(0) === 47 ? 1 : 0;
@@ -511,9 +475,7 @@ export class HTTPRouter implements Plugin {
 
   public resolve(
     method: string,
-    url: string,
-    start: number,
-    end: number,
+    pathname: string,
   ):
     | {
         type: "match";
@@ -525,14 +487,9 @@ export class HTTPRouter implements Plugin {
     | null {
     const m = isSpecificMethod(method) ? method : undefined;
 
-    // Attempt static lookup first without slicing if possible
-    // Wait, Maps need the string key. So we still need ONE slice if we use Maps.
-    // BUT we can use a trie for everything or a specialized cache.
-    const pathname = url.slice(start, end) || "/";
-
     let segs: string[] | null = null;
     const ensureSegments = (): string[] => {
-      if (segs === null) segs = segmentPathRaw(url, start, end);
+      if (segs === null) segs = segmentPath(pathname);
       return segs;
     };
 
@@ -720,10 +677,8 @@ export class HTTPRouter implements Plugin {
       name: "http-router",
       run: (ctx: Context) => {
         if (ctx.tcp || ctx.udp || ctx.grpc) return;
-        const url = ctx.req.url;
-        const { start, end } = getPathnameIndices(url);
-        const pathname = url.slice(start, end) || "/";
-        const match = HttpRouter.resolve(ctx.req.method, url, start, end);
+        const pathname = ctx.pathname || "/";
+        const match = HttpRouter.resolve(ctx.req.method, pathname);
 
         if (!match) return;
 

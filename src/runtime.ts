@@ -136,22 +136,23 @@ export class Runtime {
     }
 
     const body = ctx.body;
-    // Check if body is a stream or iterator that needs the context to stay alive
-    const isPersistent =
-      body instanceof ReadableStream ||
-      (body &&
-        typeof body === "object" &&
-        (Symbol.asyncIterator in body ||
-          (typeof (body as { _isSSE?: unknown })._isSSE === "boolean" &&
-            (body as { _isSSE: boolean })._isSSE)));
-
-    if (!isPersistent) {
+    // Fast path: string, null, undefined, number, boolean are never persistent
+    if (body === null || typeof body !== "object") {
       ctx.dispose();
       this.releaseContext(ctx);
     } else {
-      // The Context itself must handle its own release when the stream closes.
-      // We'll implement a 'dispose' hook in Context.
-      ctx.onDispose(() => this.releaseContext(ctx));
+      const isPersistent =
+        body instanceof ReadableStream ||
+        Symbol.asyncIterator in body ||
+        (typeof (body as { _isSSE?: unknown })._isSSE === "boolean" &&
+          (body as { _isSSE: boolean })._isSSE);
+
+      if (!isPersistent) {
+        ctx.dispose();
+        this.releaseContext(ctx);
+      } else {
+        ctx.onDispose(() => this.releaseContext(ctx));
+      }
     }
 
     return res;

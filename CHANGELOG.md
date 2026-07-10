@@ -2,6 +2,18 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.5] — 2026-07-10 — Performance Optimizations
+
+### Optimized
+
+- **HTTPRouter.resolve()** — eliminated redundant URL parsing on every request. Changed signature from `resolve(method, url, start, end)` to `resolve(method, pathname)`. The router step now uses `ctx.pathname` (already parsed in `Context.setReq()`) instead of calling `getPathnameIndices()` + `url.slice()` per request. Removed dead functions `getPathnameIndices` and `segmentPathRaw`.
+- **Context.setReq()** — consolidated URL parsing into a single-pass scan for `?` and `#` delimiters, with trailing-slash stripping to match route normalization. Previously, pathname parsing was split across `setReq` and `getPathnameIndices`.
+- **Runtime.finalizeResponse()** — added fast-path for non-object bodies (`string`, `null`, `undefined`, `number`, `boolean`). Skips `instanceof ReadableStream`, `Symbol.asyncIterator`, and `_isSSE` checks when the body is not an object, reducing overhead on the most common response path.
+
+### Benchmark Impact
+
+- Reduced per-request overhead by eliminating duplicate URL parsing and short-circuiting persistent-body checks for simple responses.
+
 ## [1.0.4] — 2026-07-10 - Production Ready
 
 ### Fixed

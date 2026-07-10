@@ -325,13 +325,31 @@ export class Context {
     const url = req.url;
     const start = url.indexOf("//") + 2;
     const pathStart = url.indexOf("/", start);
-    const queryStart = url.indexOf("?", pathStart);
-    this.pathname =
-      pathStart === -1
-        ? "/"
-        : queryStart === -1
-          ? url.slice(pathStart)
-          : url.slice(pathStart, queryStart);
+
+    let pathname: string;
+    if (pathStart === -1) {
+      pathname = "/";
+    } else {
+      // Find end of pathname: first '?' (63) or '#' (35) after pathStart
+      let pathEnd = url.length;
+      for (let i = pathStart; i < url.length; i++) {
+        const cc = url.charCodeAt(i);
+        if (cc === 63 || cc === 35) {
+          pathEnd = i;
+          break;
+        }
+      }
+      pathname = url.slice(pathStart, pathEnd) || "/";
+    }
+
+    // Strip trailing slash (except for root "/") to match route normalization
+    if (
+      pathname.length > 1 &&
+      pathname.charCodeAt(pathname.length - 1) === 47
+    ) {
+      pathname = pathname.slice(0, -1);
+    }
+    this.pathname = pathname;
   }
 
   /**
