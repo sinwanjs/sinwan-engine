@@ -4,23 +4,29 @@ All notable changes to **Sinwan Engine** are documented in this file. The format
 
 ## [1.0.4] — 2026-07-10 - Production Ready
 
+### Fixed
+
+- Fixed JSDoc import path in `modules.ts` — `from "./src/modules"` → `from "sinwan-engine"`
+
+## [1.0.3] — 2026-07-10 — Production Ready (unpublished)
+
+### Fixed
+
+- Fixed JSDoc example in `register()` — `new Sinwan()` → `await Sinwan.create()`
+
+## [1.0.2] — 2026-07-10 — Production Ready (unpublished)
+
+### Fixed
+
+- Fixed JSDoc example in `Sinwan.create()` — `app.listen(3000)` → `await app.listen(3000)`
+
+## [1.0.1] — 2026-07-10 — Production Ready (unpublished)
+
 ### Changed
 
 - Removed unused `happy-dom` devDependency
 - Excluded `bench.ts` from `tsconfig.json` (imports from `./dist`, not available in CI before build)
 - Switched release workflow to OIDC trusted publishing (`npm publish --provenance`)
-
-### Fixed
-
-- Fixed JSDoc example in `Sinwan.create()` — `app.listen(3000)` → `await app.listen(3000)`
-- Fixed JSDoc example in `register()` — `new Sinwan()` → `await Sinwan.create()`
-- Fixed JSDoc import path in `modules.ts` — `from "./src/modules"` → `from "sinwan-engine"`
-
-## [1.0.3] — 2026-07-10 (unpublished)
-
-## [1.0.2] — 2026-07-10 (unpublished)
-
-## [1.0.1] — 2026-07-10 (unpublished)
 
 ## [1.0.0] — 2026-07-08 — Production Ready (unpublished)
 
