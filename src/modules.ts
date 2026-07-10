@@ -5,7 +5,7 @@
  * that can be registered in a single fluent call.
  *
  * ```ts
- * import { createHttpModule, createWSModule } from "./src/modules";
+ * import { createHttpModule, createWSModule } from "sinwan-engine";
  *
  * const apiModule = createHttpModule({
  *   prefix: "/api/v1",
