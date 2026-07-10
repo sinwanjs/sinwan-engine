@@ -2,6 +2,12 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] — 2026-07-10
+
+### Fixed
+
+- Fixed JSDoc example in `Sinwan.create()` — `app.listen(3000)` → `await app.listen(3000)`
+
 ## [1.0.1] — 2026-07-10 - Production Ready
 
 ### Changed

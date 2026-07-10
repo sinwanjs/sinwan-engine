@@ -252,7 +252,7 @@ export class Sinwan {
    *   routes: (app) => app.get("/users", listUsers),
    * });
    *
-   * const app = new Sinwan();
+   * const app = await Sinwan.create();
    * app.register(apiModule, sinwanGRPC);
    * ```
    *
@@ -290,7 +290,7 @@ export class Sinwan {
    * });
    *
    * app.get("/", (ctx) => ctx.json({ hello: "world" }));
-   * app.listen(3000);
+   * await app.listen(3000);
    * ```
    *
    * @param options Same options as the constructor.
