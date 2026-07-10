@@ -1,6 +1,6 @@
 {
   "name": "sinwan-engine",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Server framework for building modern distributed applications. Unified runtime for HTTP, WebSocket, TCP, UDP, and gRPC — APIs, real-time systems, microservices, and event-driven apps from a single engine.",
   "module": "dist/index.js",
   "type": "module",
@@ -17,8 +17,7 @@
   },
   "devDependencies": {
     "typescript": "^6.0.3",
-    "@types/bun": "latest",
-    "happy-dom": "^20.9.0"
+    "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^6.0.3",
