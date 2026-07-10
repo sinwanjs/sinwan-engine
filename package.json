@@ -16,7 +16,6 @@
     "prepublishOnly": "bun run typecheck && bun run clean && bun run build"
   },
   "devDependencies": {
-    "sinwan-grpc": "link:sinwan-grpc",
     "typescript": "^6.0.3",
     "@types/bun": "latest",
     "happy-dom": "^20.9.0"
