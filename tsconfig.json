@@ -29,5 +29,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["examples", "dist", "docs", "node_modules"]
+  "exclude": ["bench.ts", "examples", "dist", "docs", "node_modules"]
 }
