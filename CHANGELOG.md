@@ -2,6 +2,23 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-08-03 — Architecture Cleanup & Async Refactor
+
+### Removed
+
+- **`step-engine.ts`** and its test file — eliminated the entire step-engine module and all references. The runtime now drives the middleware chain directly without the `StepEngine` abstraction layer.
+- **`never`-typed overload stubs** for `beforeGRPC` — removed the `beforeGRPC(event: never, handler: never)` placeholder overload. The method now has a single concrete signature.
+
+### Changed
+
+- **`listenTCP`** and **`listenUDP`** — refactored from `.then()` chains to `async/await` for readability and error handling clarity.
+- **`listenGRPC`** — refactored from `.then()` chains to `async/await`. The `never`-typed overload stub remains as a placeholder for the `sinwan-grpc` augmentation.
+- **`package.json`** — moved `author`, `license`, `repository`, `bugs`, and `homepage` fields to the top of the file alongside `version` and `description` for better metadata visibility.
+
+### Fixed
+
+- **`middleware-patterns.ts`** example — removed invalid generic type argument `<{ durationMs: number }>` from `bus.on()` (the `E` type param is constrained to `string`, not payload shape) and completed the broken `as { durationMs: number }` cast on the payload.
+
 ## [1.0.5] — 2026-07-10 — Performance Optimizations
 
 ### Optimized
