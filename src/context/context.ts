@@ -27,6 +27,7 @@ import type {
   EventMeta,
   EventTraceEntry,
   EventTraceOptions,
+  InternalEventMap,
   ListenerOptions,
   SSEController,
   SSEOptions,
@@ -2056,6 +2057,12 @@ export class Context {
    * - `response:set` — fires when `ctx.json()` / `ctx.text()` / … commits a response.
    * - `request:end`  — fires after the response is built (app-level, not scoped).
    */
+  on<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
+  on(event: string, handler: EventHandler, options?: ListenerOptions): this;
   on(event: string, handler: EventHandler, options?: ListenerOptions): this {
     const bus = this.getBus();
     const wrapped = this.wrapScopedHandler(event, handler, false);
@@ -2065,6 +2072,12 @@ export class Context {
   }
 
   /** Register a once-only listener scoped to this context. */
+  once<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
+  once(event: string, handler: EventHandler, options?: ListenerOptions): this;
   once(event: string, handler: EventHandler, options?: ListenerOptions): this {
     const bus = this.getBus();
     const wrapped = this.wrapScopedHandler(event, handler, true);

@@ -20,6 +20,7 @@ import type {
   EmitResult,
   EventHandler,
   EventMeta,
+  InternalEventMap,
   ListenerOptions,
 } from "./types";
 
@@ -91,6 +92,11 @@ export class EventBus {
 
   // ─── Listener Management (Node-style) ────────────────────
 
+  on<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
   on<E extends string>(
     event: E,
     handler: EventHandler,
@@ -116,6 +122,11 @@ export class EventBus {
     return this;
   }
 
+  addListener<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
   addListener<E extends string>(
     event: E,
     handler: EventHandler,
@@ -134,6 +145,11 @@ export class EventBus {
     return this.on(event, handler, options);
   }
 
+  once<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
   once<E extends string>(
     event: E,
     handler: EventHandler,
@@ -153,6 +169,11 @@ export class EventBus {
     return this;
   }
 
+  prependListener<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
   prependListener<E extends string>(
     event: E,
     handler: EventHandler,
@@ -176,6 +197,11 @@ export class EventBus {
     return this;
   }
 
+  prependOnceListener<E extends keyof InternalEventMap>(
+    event: E,
+    handler: InternalEventMap[E],
+    options?: ListenerOptions,
+  ): this;
   prependOnceListener<E extends string>(
     event: E,
     handler: EventHandler,

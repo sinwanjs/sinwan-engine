@@ -37,6 +37,9 @@ import { Sinwan } from "sinwan-engine";
 const app = await Sinwan.create();
 
 app
+  .use((ctx) => {
+    console.log(`[HTTP] ${ctx.req.method} ${ctx.req.url}`);
+  })
   .get("/", (ctx) => ctx.json({ hello: "world" }))
   .get("/users/:id", (ctx) => ctx.json({ id: ctx.params.id }))
   .post("/users", async (ctx) => {

@@ -183,8 +183,16 @@ export interface InternalEventPayloads {
   };
 }
 
+export type InternalEventHandler<P> = (
+  ctx: Context,
+  payload: P,
+  meta?: EventMeta,
+) => Promise<unknown> | unknown;
+
 export type InternalEventMap = {
-  [K in keyof InternalEventPayloads]: EventHandler<InternalEventPayloads[K]>;
+  [K in keyof InternalEventPayloads]: InternalEventHandler<
+    InternalEventPayloads[K]
+  >;
 };
 
 // ─── Error System ───────────────────────────────────────────

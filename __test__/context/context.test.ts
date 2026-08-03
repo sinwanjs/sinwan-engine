@@ -463,6 +463,105 @@ describe("Context", () => {
     });
   });
 
+  // ─── HTTP status helper methods (1xx–5xx) ────────────────
+
+  describe("status helpers", () => {
+    const successCases: Array<[string, number, keyof Context, "message"]> = [
+      ["continue", 100, "continue", "message"],
+      ["switchingProtocols", 101, "switchingProtocols", "message"],
+      ["processing", 102, "processing", "message"],
+      ["earlyHints", 103, "earlyHints", "message"],
+      ["ok", 200, "ok", "message"],
+      ["created", 201, "created", "message"],
+      ["accepted", 202, "accepted", "message"],
+      [
+        "nonAuthoritativeInformation",
+        203,
+        "nonAuthoritativeInformation",
+        "message",
+      ],
+      ["noContent", 204, "noContent", "message"],
+      ["resetContent", 205, "resetContent", "message"],
+      ["partialContent", 206, "partialContent", "message"],
+      ["multiStatus", 207, "multiStatus", "message"],
+      ["alreadyReported", 208, "alreadyReported", "message"],
+      ["imUsed", 226, "imUsed", "message"],
+      ["multipleChoices", 300, "multipleChoices", "message"],
+      ["movedPermanently", 301, "movedPermanently", "message"],
+      ["found", 302, "found", "message"],
+      ["seeOther", 303, "seeOther", "message"],
+      ["notModified", 304, "notModified", "message"],
+      ["useProxy", 305, "useProxy", "message"],
+      ["temporaryRedirect", 307, "temporaryRedirect", "message"],
+      ["permanentRedirect", 308, "permanentRedirect", "message"],
+    ];
+
+    const errorCases: Array<[string, number, keyof Context]> = [
+      ["badRequest", 400, "badRequest"],
+      ["unauthorized", 401, "unauthorized"],
+      ["paymentRequired", 402, "paymentRequired"],
+      ["forbidden", 403, "forbidden"],
+      ["notFound", 404, "notFound"],
+      ["methodNotAllowed", 405, "methodNotAllowed"],
+      ["notAcceptable", 406, "notAcceptable"],
+      ["proxyAuthenticationRequired", 407, "proxyAuthenticationRequired"],
+      ["requestTimeout", 408, "requestTimeout"],
+      ["conflict", 409, "conflict"],
+      ["gone", 410, "gone"],
+      ["lengthRequired", 411, "lengthRequired"],
+      ["preconditionFailed", 412, "preconditionFailed"],
+      ["payloadTooLarge", 413, "payloadTooLarge"],
+      ["uriTooLong", 414, "uriTooLong"],
+      ["unsupportedMediaType", 415, "unsupportedMediaType"],
+      ["rangeNotSatisfiable", 416, "rangeNotSatisfiable"],
+      ["expectationFailed", 417, "expectationFailed"],
+      ["imATeapot", 418, "imATeapot"],
+      ["misdirectedRequest", 421, "misdirectedRequest"],
+      ["unprocessableEntity", 422, "unprocessableEntity"],
+      ["locked", 423, "locked"],
+      ["failedDependency", 424, "failedDependency"],
+      ["tooEarly", 425, "tooEarly"],
+      ["upgradeRequired", 426, "upgradeRequired"],
+      ["preconditionRequired", 428, "preconditionRequired"],
+      ["tooManyRequests", 429, "tooManyRequests"],
+      ["requestHeaderFieldsTooLarge", 431, "requestHeaderFieldsTooLarge"],
+      ["unavailableForLegalReasons", 451, "unavailableForLegalReasons"],
+      ["internalServerError", 500, "internalServerError"],
+      ["notImplemented", 501, "notImplemented"],
+      ["badGateway", 502, "badGateway"],
+      ["serviceUnavailable", 503, "serviceUnavailable"],
+      ["gatewayTimeout", 504, "gatewayTimeout"],
+    ];
+
+    for (const [name, status, method] of successCases) {
+      test(`${name}() sets ${status} with default message`, () => {
+        (ctx[method] as (m?: string) => void)();
+        expect(ctx.statusCode).toBe(status);
+        expect(ctx.body).toEqual({ message: expect.any(String) });
+        expect(ctx.hasResponded()).toBe(true);
+      });
+
+      test(`${name}() sets ${status} with custom message`, () => {
+        (ctx[method] as (m?: string) => void)("custom");
+        expect(ctx.body).toEqual({ message: "custom" });
+      });
+    }
+
+    for (const [name, status, method] of errorCases) {
+      test(`${name}() sets ${status} with default error message`, () => {
+        (ctx[method] as (m?: string) => void)();
+        expect(ctx.statusCode).toBe(status);
+        expect(ctx.body).toEqual({ error: expect.any(String) });
+        expect(ctx.hasResponded()).toBe(true);
+      });
+
+      test(`${name}() sets ${status} with custom error message`, () => {
+        (ctx[method] as (m?: string) => void)("custom");
+        expect(ctx.body).toEqual({ error: "custom" });
+      });
+    }
+  });
+
   describe("stream()", () => {
     test("sets streaming response", () => {
       const readable = new ReadableStream({
