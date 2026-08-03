@@ -300,6 +300,15 @@ describe("Context", () => {
       ctx.json({ data: 1 });
       expect(emitted).toBe(true);
     });
+
+    test("ctx.once('response:set') is the after-response hook", () => {
+      let afterStatus: number | undefined;
+      ctx.once("response:set", (_c, payload) => {
+        afterStatus = (payload as { statusCode: number }).statusCode;
+      });
+      ctx.json({ ok: true }, 201);
+      expect(afterStatus).toBe(201);
+    });
   });
 
   describe("text()", () => {
@@ -419,6 +428,38 @@ describe("Context", () => {
       ctx.setGlobal("id_abc", { data: 1 });
       const data = ctx.redirectData<{ data: number }>("flash");
       expect(data).toEqual({ data: 1 });
+    });
+  });
+
+  // ─── notFound() / badRequest() ───────────────────────────
+
+  describe("notFound()", () => {
+    test("sets 404 with default message", () => {
+      ctx.notFound();
+      expect(ctx.hasResponded()).toBe(true);
+      expect(ctx.statusCode).toBe(404);
+      expect(ctx.body).toEqual({ error: "Not Found" });
+    });
+
+    test("sets 404 with custom message", () => {
+      ctx.notFound("User not found");
+      expect(ctx.statusCode).toBe(404);
+      expect(ctx.body).toEqual({ error: "User not found" });
+    });
+  });
+
+  describe("badRequest()", () => {
+    test("sets 400 with default message", () => {
+      ctx.badRequest();
+      expect(ctx.hasResponded()).toBe(true);
+      expect(ctx.statusCode).toBe(400);
+      expect(ctx.body).toEqual({ error: "Bad Request" });
+    });
+
+    test("sets 400 with custom message", () => {
+      ctx.badRequest("Invalid email");
+      expect(ctx.statusCode).toBe(400);
+      expect(ctx.body).toEqual({ error: "Invalid email" });
     });
   });
 
@@ -822,6 +863,15 @@ describe("Context", () => {
         called = true;
       });
       expect(called).toBe(true);
+    });
+
+    test("response:set fires before onDispose (before/after ordering)", () => {
+      const order: string[] = [];
+      bus.on("response:set", () => order.push("response:set"));
+      ctx.onDispose(() => order.push("onDispose"));
+      ctx.json({ ok: true });
+      ctx.dispose();
+      expect(order).toEqual(["response:set", "onDispose"]);
     });
 
     test("double dispose is no-op", () => {
@@ -1552,6 +1602,21 @@ describe("Context", () => {
     test("delegates to errorHandler", () => {
       ctx.setReq(makeReq());
       expect(() => ctx.catch(new Error("test"), ctx, false)).not.toThrow();
+    });
+
+    test("single-arg form sets an error response", async () => {
+      ctx.setReq(makeReq());
+      await ctx.catch(new Error("boom"));
+      expect(ctx.hasResponded()).toBe(true);
+      expect(ctx.statusCode).toBe(500);
+    });
+
+    test("single-arg form with statusCode error preserves status", async () => {
+      ctx.setReq(makeReq());
+      const err = new Error("Not found") as Error & { statusCode: number };
+      err.statusCode = 404;
+      await ctx.catch(err);
+      expect(ctx.statusCode).toBe(404);
     });
   });
 

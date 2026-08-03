@@ -300,11 +300,36 @@ export class Context {
   }
 
   /**
-   * Handle an error that occurred during request processing.
-   * This method is called by the server when an error is thrown.
+   * Delegate an error to the configured {@link ErrorHandler}.
+   *
+   * This is the canonical way to catch errors from async operations inside a
+   * handler — the engine-driven chain runner does not expose a `next()` to
+   * wrap in try/catch, so use this instead:
+   *
+   * ```ts
+   * app.get("/risky", async (ctx) => {
+   *   try {
+   *     const data = await riskyOp();
+   *     ctx.json(data);
+   *   } catch (error) {
+   *     await ctx.catch(error); // sets an error response on ctx
+   *   }
+   * });
+   * ```
+   *
+   * @param error                  The thrown value.
+   * @param _ctx                   Ignored — always `this`. Kept for backward
+   *                               compatibility with the old 3-arg signature.
+   * @param showMessageInProduction When `true`, the error message is included
+   *                               in the response body even in production.
+   * @returns A Promise that resolves once the error response is set.
    */
-  catch(error: unknown, ctx: Context, showMessageInProduction: boolean): void {
-    this.errorHandler.handle(error, ctx, showMessageInProduction);
+  catch(
+    error: unknown,
+    _ctx?: Context,
+    showMessageInProduction: boolean = false,
+  ): Promise<void> {
+    return this.errorHandler.handle(error, this, showMessageInProduction);
   }
 
   /**
@@ -593,6 +618,22 @@ export class Context {
     }
 
     return this.getGlobalOnce<V>(dataKey);
+  }
+
+  /**
+   * Respond with a 404 Not Found JSON error.
+   * @param message Optional custom error message (default: "Not Found").
+   */
+  notFound(message: string = "Not Found"): void {
+    this.json({ error: message }, 404);
+  }
+
+  /**
+   * Respond with a 400 Bad Request JSON error.
+   * @param message Optional custom error message (default: "Bad Request").
+   */
+  badRequest(message: string = "Bad Request"): void {
+    this.json({ error: message }, 400);
   }
 
   /**
@@ -1029,8 +1070,25 @@ export class Context {
 
   /**
    * Commits the response state. Sets body, status, headers, marks as responded,
-   * and stops step execution so the pipeline halts after the current step.
+   * and stops chain execution so the pipeline halts after the current handler.
    * Centralized to ensure consistent event emission and state management.
+   *
+   * Emits the `response:set` event (synchronously) with `{ kind, statusCode,
+   * contentType }` when a listener is registered. This is the canonical
+   * "after a handler responds" hook — register a context-scoped listener to
+   * run code once a response has been committed:
+   *
+   * ```ts
+   * app.get("/users", async (ctx) => {
+   *   ctx.once("response:set", (c, { statusCode }) => {
+   *     console.log("responded with", statusCode);
+   *   });
+   *   ctx.json(await listUsers());
+   * });
+   * ```
+   *
+   * For app-wide timing/logging, prefer `app.bus.on("request:end", ...)` which
+   * fires once per request after the response is built.
    */
   private commitResponse<
     T =
@@ -1464,7 +1522,7 @@ export class Context {
     return (this._status & Context.SKIPPED) !== 0;
   }
 
-  /** Clear the skip flag — used by runChain to prevent skip from propagating to StepEngine. */
+  /** Clear the skip flag — used by runChain to prevent skip from propagating past the current chain. */
   clearSkip(): void {
     this._status &= ~Context.SKIPPED;
   }
@@ -1490,7 +1548,7 @@ export class Context {
     return (this._status & Context.FAILED) !== 0;
   }
 
-  /** Clear the fail flag — used by runChain to prevent fail from propagating to StepEngine after onError handles it. */
+  /** Clear the fail flag — used by runChain to prevent fail from propagating after onError handles it. */
   clearFail(): void {
     this._status &= ~Context.FAILED;
     this._failError = null;
@@ -1541,6 +1599,22 @@ export class Context {
 
   /**
    * Register a listener scoped to this context.
+   *
+   * Scoped listeners are automatically removed when the context is disposed,
+   * so they are safe to use for per-request "after" hooks without leaking:
+   *
+   * ```ts
+   * app.use((ctx) => {
+   *   // runs once when a handler commits a response
+   *   ctx.once("response:set", (c, { statusCode }) => {
+   *     metrics.record(statusCode);
+   *   });
+   * });
+   * ```
+   *
+   * Common before/after events:
+   * - `response:set` — fires when `ctx.json()` / `ctx.text()` / … commits a response.
+   * - `request:end`  — fires after the response is built (app-level, not scoped).
    */
   on(event: string, handler: EventHandler, options?: ListenerOptions): this {
     const bus = this.getBus();
@@ -1573,7 +1647,23 @@ export class Context {
     return this;
   }
 
-  /** Register a callback to be executed when the context is disposed. */
+  /**
+   * Register a callback to be executed when the context is disposed.
+   *
+   * This is the "after response" cleanup hook — it fires after the response
+   * has been built and `request:end` has been emitted, during context
+   * teardown. Use it to release resources, close handles, or log final
+   * state without blocking the response:
+   *
+   * ```ts
+   * app.use((ctx) => {
+   *   const handle = acquireHandle();
+   *   ctx.onDispose(() => handle.release()); // runs after response is sent
+   * });
+   * ```
+   *
+   * If the context is already disposed, the callback runs immediately.
+   */
   onDispose(cb: () => void): void {
     if ((this._status & Context.DISPOSED) !== 0) {
       cb();

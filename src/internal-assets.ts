@@ -10,8 +10,6 @@
  */
 
 import type { Context } from "./context/context";
-import type { Plugin } from "./types";
-import type { Runtime } from "./runtime";
 
 export type AssetHandler = (ctx: Context) => void;
 
@@ -88,7 +86,7 @@ const DEFAULT_MANIFEST = JSON.stringify(
   2,
 );
 
-export class InternalAssets implements Plugin {
+export class InternalAssets {
   public readonly name = "sinwan:internal-assets";
 
   private readonly assets = new Map<string, AssetHandler>();
@@ -199,51 +197,59 @@ export class InternalAssets implements Plugin {
     return this.assets.has(path);
   }
 
-  install(runtime: Runtime): void {
-    runtime.engine.prepend({
-      name: "sinwan:internal-assets",
-      run: (ctx: Context) => {
-        // Skip for non-HTTP contexts
-        if (ctx.tcp || ctx.udp || ctx.grpc) return;
+  /**
+   * Intercept well-known asset paths before routing.
+   * Called directly by the Runtime as the first request-handling stage.
+   *
+   * @param ctx The request context (must have `req` set).
+   * @returns - `"handled"`     — an asset matched (or a block pattern responded 404);
+   *           the Runtime should stop and finalize the response.
+   *         - `"passthrough"` — a passthrough pattern matched; the Runtime should
+   *           stop without producing a response (let Bun handle it).
+   *         - `"continue"`    — no match; the Runtime should proceed to WS/HTTP.
+   */
+  handle(ctx: Context): "handled" | "passthrough" | "continue" {
+    // Skip for non-HTTP contexts
+    if (ctx.tcp || ctx.udp || ctx.grpc) return "continue";
 
-        const url = ctx.req.url;
-        const protoIdx = url.indexOf("://");
-        let start = 0;
-        if (protoIdx !== -1) {
-          start = url.indexOf("/", protoIdx + 3);
-          if (start === -1) return;
-        }
+    const url = ctx.req.url;
+    const protoIdx = url.indexOf("://");
+    let start = 0;
+    if (protoIdx !== -1) {
+      start = url.indexOf("/", protoIdx + 3);
+      if (start === -1) return "continue";
+    }
 
-        let end = url.length;
-        for (let i = start; i < url.length; i++) {
-          const cc = url.charCodeAt(i);
-          if (cc === 63 || cc === 35) {
-            end = i;
-            break;
-          }
-        }
+    let end = url.length;
+    for (let i = start; i < url.length; i++) {
+      const cc = url.charCodeAt(i);
+      if (cc === 63 || cc === 35) {
+        end = i;
+        break;
+      }
+    }
 
-        const pathname = url.slice(start, end) || "/";
+    const pathname = url.slice(start, end) || "/";
 
-        // Passthrough: skip all subsequent steps, let Bun handle it
-        if (this.passthroughSet.has(pathname) || this.matchPattern(pathname)) {
-          return { type: "stop" } as const;
-        }
+    // Passthrough: stop the pipeline, let Bun handle it (no response produced)
+    if (this.passthroughSet.has(pathname) || this.matchPattern(pathname)) {
+      return "passthrough";
+    }
 
-        // Asset match: respond and stop (takes priority over block patterns)
-        const handler = this.assets.get(pathname);
-        if (handler) {
-          handler(ctx);
-          return { type: "stop" } as const;
-        }
+    // Asset match: respond and stop (takes priority over block patterns)
+    const handler = this.assets.get(pathname);
+    if (handler) {
+      handler(ctx);
+      return "handled";
+    }
 
-        // Block patterns: respond 404 and stop
-        if (this.blockPatternList.some((p) => this.matchGlob(pathname, p))) {
-          ctx.setRawResponse(null, 404);
-          return { type: "stop" } as const;
-        }
-      },
-    });
+    // Block patterns: respond 404 and stop
+    if (this.blockPatternList.some((p) => this.matchGlob(pathname, p))) {
+      ctx.setRawResponse(null, 404);
+      return "handled";
+    }
+
+    return "continue";
   }
 
   private matchPattern(pathname: string): boolean {

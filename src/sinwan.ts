@@ -1,4 +1,3 @@
-import { StepEngine } from "./step-engine";
 import { EventBus } from "./event-bus";
 import {
   ErrorHandler,
@@ -16,14 +15,12 @@ import {
   TCPRouter,
   type TCPClientConfig,
   type TCPConnectOptions,
-  type TCPHook,
   type TCPListenOptions,
   type TCPRouteConfig,
 } from "./routers/tcp-router";
 import {
   UDPRouter,
   type UDPConnectOptions,
-  type UDPHook,
   type UDPListenOptions,
   type UDPRouteConfig,
 } from "./routers/udp-router";
@@ -36,10 +33,9 @@ import type {
   TCPSocketListener,
   UnixSocketListener,
 } from "bun";
-import type { EventHandler, Plugin, Request, Step } from "./types";
+import type { EventHandler, Plugin, Request } from "./types";
 import { LifecycleState } from "./types";
 import type { SinwanModule } from "./modules";
-import type { Context } from "./context/context";
 
 export interface SinwanOptions {
   idleTimeout?: number;
@@ -59,10 +55,6 @@ export class Sinwan {
 
   /** Event Bus: Handles events for the application.*/
   public readonly bus: EventBus;
-
-  /** Step Engine: Executes steps in order.*/
-  /** Each step is a function that takes the context and returns a Promise.*/
-  private readonly engine: StepEngine;
 
   /** Router: Handles routing for the application.*/
   private readonly httpRouter: HTTPRouter;
@@ -113,7 +105,6 @@ export class Sinwan {
    */
   constructor(options: SinwanOptions = {}) {
     this.config = options;
-    this.engine = new StepEngine();
     this.bus = new EventBus();
     this.errorHandler = new ErrorHandler(options.error ?? {});
     this.httpRouter = new HTTPRouter();
@@ -123,17 +114,14 @@ export class Sinwan {
     this.internalAssets = new InternalAssets(options.internalAssets ?? {});
 
     this.runtime = new Runtime({
-      engine: this.engine,
       bus: this.bus,
       errorHandler: this.errorHandler,
       globalState: this.sharedState,
+      httpRouter: this.httpRouter,
+      internalAssets: options.internalAssets ? this.internalAssets : undefined,
+      wsRouter: this.wsRouter,
       maxPoolSize: options.maxPoolSize,
     });
-
-    // Only install internal assets step when explicitly configured
-    if (options.internalAssets) {
-      this.runtime.use(this.internalAssets);
-    }
 
     if (options.websocket) {
       this.wsRouter.setOptions(options.websocket);
@@ -179,64 +167,6 @@ export class Sinwan {
   }
 
   /**
-   * Add a middleware step to the request pipeline.
-   *
-   * **Named step (explicit):**
-   * ```ts
-   * app.add("auth", async (ctx, bus) => {
-   *   const token = ctx.req.headers.get("authorization");
-   *   if (!token) return { type: "stop" };
-   *   ctx.set("user", await verify(token));
-   * });
-   * ```
-   *
-   * **Full Step object:**
-   * ```ts
-   * app.add({
-   *   name: "cors",
-   *   async run(ctx) {
-   *     ctx.res.headers.set("Access-Control-Allow-Origin", "*");
-   *   },
-   * });
-   * ```
-   *
-   * Steps execute in registration order. Duplicate names throw.
-   *
-   * @returns `this` for fluent chaining.
-   */
-  add(step: Step): this;
-  add(name: string, run: Step["run"]): this;
-  add(stepOrName: Step | string, run?: Step["run"]): this {
-    if (typeof stepOrName === "string") {
-      if (!stepOrName) {
-        throw new TypeError(`[Sinwan.add] Step name cannot be empty.`);
-      }
-      if (typeof run !== "function") {
-        throw new TypeError(
-          `[Sinwan.add] Second argument must be a function for step "${stepOrName}".`,
-        );
-      }
-      this.engine.add({ name: stepOrName, run });
-    } else {
-      if (!stepOrName || typeof stepOrName !== "object") {
-        throw new TypeError(`[Sinwan.add] Expected a Step object.`);
-      }
-      if (typeof stepOrName.name !== "string" || !stepOrName.name) {
-        throw new TypeError(
-          `[Sinwan.add] Step must have a non-empty string "name".`,
-        );
-      }
-      if (typeof stepOrName.run !== "function") {
-        throw new TypeError(
-          `[Sinwan.add] Step "${stepOrName.name}" must have a "run" method.`,
-        );
-      }
-      this.engine.add(stepOrName);
-    }
-    return this;
-  }
-
-  /**
    * Register one or more modules or capability providers.
    *
    * Modules define protocol routes (HTTP, WS, TCP, UDP, gRPC).
@@ -275,7 +205,16 @@ export class Sinwan {
           `[Sinwan.register] Module "${mod.name}" must have a "register(app)" method.`,
         );
       }
-      mod.register(this);
+      // HTTP modules receive the internal HTTPRouter as a second argument so
+      // they can register grouped/mounted routes without exposing the router.
+      if ("type" in mod && (mod as { type?: string }).type === "http") {
+        (mod.register as (app: Sinwan, router: HTTPRouter) => void)(
+          this,
+          this.httpRouter,
+        );
+      } else {
+        mod.register(this);
+      }
     }
     return this;
   }
@@ -302,6 +241,44 @@ export class Sinwan {
       await app.lifecycle.init({ options });
     }
     return app;
+  }
+
+  /**
+   * Register app-level HTTP middleware.
+   *
+   * Middleware handlers run before every route's own handlers, in
+   * registration order. This is the app-level equivalent of
+   * {@link HTTPRouter.use}, applied to all routes registered after the call.
+   *
+   * ```ts
+   * app
+   *   .use((ctx) => {
+   *     ctx.headers.set("Access-Control-Allow-Origin", "*");
+   *   })
+   *   .use(authMiddleware, loggingMiddleware)
+   *   .get("/", (ctx) => ctx.json({ ok: true }));
+   * ```
+   *
+   * Note: this is distinct from {@link Sinwan.install} (plugins) and
+   * {@link Sinwan.add} (pipeline steps). `use` registers HTTP route
+   * handlers (`RouteHandler`), the same type accepted by `get`/`post`/etc.
+   *
+   * @param handlers One or more route handlers to run for every request.
+   * @returns `this` for fluent chaining.
+   */
+  use(...handlers: RouteHandler[]): this {
+    if (handlers.length === 0) {
+      throw new TypeError(`[Sinwan.use] At least one handler is required.`);
+    }
+    for (let i = 0; i < handlers.length; i++) {
+      if (typeof handlers[i] !== "function") {
+        throw new TypeError(
+          `[Sinwan.use] Handler at index ${i} must be a function.`,
+        );
+      }
+    }
+    this.httpRouter.use(...handlers);
+    return this;
   }
 
   /**
@@ -483,97 +460,6 @@ export class Sinwan {
   }
 
   /**
-   * Register a middleware hook for TCP events.
-   * Runs before the route's own handler.
-   * @returns `this` for fluent chaining.
-   */
-  beforeTCP(
-    event: "open" | "data" | "close" | "drain" | "error",
-    handler: TCPHook,
-  ): this {
-    this.bus.on(`tcp:${event}`, handler);
-    return this;
-  }
-
-  /**
-   * Register a middleware hook for UDP events.
-   * Runs before the route's own handler.
-   * @returns `this` for fluent chaining.
-   */
-  beforeUDP(
-    event: "open" | "data" | "drain" | "error" | "close",
-    handler: UDPHook,
-  ): this {
-    this.bus.on(`udp:${event}`, handler);
-    return this;
-  }
-
-  /**
-   * Register a middleware hook for gRPC events.
-   * Runs before the route's own handler for "call" events.
-   *
-   * When `sinwan-grpc` is installed, this method is augmented with
-   * fully typed overloads (`GRPCHook`, `GRPCAfterHook`, `GRPCErrorHook`).
-   *
-   * @returns `this` for fluent chaining.
-   */
-  beforeGRPC(event: never, handler: never): this;
-  beforeGRPC(
-    event: "call" | "finish" | "error",
-    handler: (ctx: unknown, ...args: unknown[]) => unknown,
-  ): this {
-    if (event === "error") {
-      this.bus.on("grpc:error", (ctx, payload: unknown) =>
-        handler(ctx, (payload as { error?: unknown })?.error, payload),
-      );
-      return this;
-    }
-
-    this.bus.on(`grpc:${event}`, handler as EventHandler);
-    return this;
-  }
-
-  /**
-   * Create a route group with a common prefix.
-   *
-   * ```ts
-   * app.group("/api/v1", (r) => {
-   *     r.get("/users", listUsers)
-   *      .post("/users", createUser)
-   *      .get("/posts", listPosts);
-   *   });
-   * ```
-   *
-   * @returns `this` for fluent chaining.
-   */
-  group(prefix: string, callback: (httpRouter: HTTPRouter) => void): this {
-    if (!prefix || typeof prefix !== "string") {
-      throw new TypeError(`[Sinwan.group] Prefix must be a non-empty string.`);
-    }
-    this.httpRouter.group(prefix, callback);
-    return this;
-  }
-
-  /**
-   * Mount an existing router instance under a prefix.
-   *
-   * ```ts
-   * const apiRouter = new HTTPRouter();
-   * apiRouter.get("/users", listUsers);
-   * app.mount("/api", apiRouter);
-   * ```
-   *
-   * @returns `this` for fluent chaining.
-   */
-  mount(prefix: string, httpRouter: HTTPRouter): this {
-    if (!prefix || typeof prefix !== "string") {
-      throw new TypeError(`[Sinwan.mount] Prefix must be a non-empty string.`);
-    }
-    this.httpRouter.mount(prefix, httpRouter);
-    return this;
-  }
-
-  /**
    * Utility for testing and programmatic requests.
    * Send a mock request to the application.
    *
@@ -633,16 +519,14 @@ export class Sinwan {
     return this;
   }
 
-  listenTCP<T = unknown>(
+  async listenTCP<T = unknown>(
     name: string,
     options: TCPListenOptions<T>,
   ): Promise<TCPSocketListener<unknown> | UnixSocketListener<unknown>> {
     this.assertInitialized("listenTCP");
-    return this.transitionToReady(options.port ?? 0, "tcp").then(() => {
-      return this.tcpRouter.listen(this.runtime, name, options) as
-        | TCPSocketListener<unknown>
-        | UnixSocketListener<unknown>;
-    });
+    await this.transitionToReady(options.port ?? 0, "tcp");
+    return this.tcpRouter.listen(this.runtime, name, options) as TCPSocketListener<unknown> |
+      UnixSocketListener<unknown>;
   }
 
   connectTCP<T = unknown>(
@@ -658,14 +542,13 @@ export class Sinwan {
     ) as Promise<Socket<unknown>>;
   }
 
-  listenUDP<T = unknown>(
+  async listenUDP<T = unknown>(
     name: string,
     options: UDPListenOptions<T>,
   ): Promise<import("./routers/udp-router").SinwanUDPSocket<T>> {
     this.assertInitialized("listenUDP");
-    return this.transitionToReady(options.port ?? 0, "udp").then(() => {
-      return this.udpRouter.listen(this.runtime, name, options);
-    });
+    await this.transitionToReady(options.port ?? 0, "udp");
+    return await this.udpRouter.listen(this.runtime, name, options);
   }
 
   connectUDP<T = unknown>(
@@ -686,7 +569,7 @@ export class Sinwan {
    * ```
    */
   listenGRPC(nameOrOptions?: never, options?: never): Promise<never>;
-  listenGRPC(
+  async listenGRPC(
     nameOrOptions?: string | Record<string, unknown>,
     options?: Record<string, unknown>,
   ): Promise<unknown> {
@@ -702,14 +585,12 @@ export class Sinwan {
         ? provider.listen(this.runtime, nameOrOptions, options)
         : provider.listen(this.runtime, nameOrOptions);
 
-    return readyPromise
-      .then(() => handlePromise)
-      .then((handle: unknown) => {
-        this.lifecycle.on("shutdown", () => {
-          (handle as { stop: () => void }).stop();
-        });
-        return handle;
-      });
+    await readyPromise;
+    const handle = await handlePromise;
+    this.lifecycle.on("shutdown", () => {
+      (handle as { stop: () => void; }).stop();
+    });
+    return handle;
   }
 
   /**
@@ -759,11 +640,6 @@ export class Sinwan {
   ): Promise<Server<WSData>> {
     const hasHttpRoutes = this.httpRouterInstalled;
     this.ensureHttpRouterInstalled();
-
-    // Install ws-upgrade step only when WS routes exist (zero cost otherwise)
-    if (this.wsRouter.hasRoutes()) {
-      this.runtime.use(this.wsRouter);
-    }
 
     try {
       const wsHandlers = this.wsRouter.buildWebSocketHandlers(this.runtime);
@@ -843,8 +719,6 @@ export class Sinwan {
   }
 
   private ensureHttpRouterInstalled(): void {
-    if (this.httpRouterInstalled) return;
-    this.runtime.use(this.httpRouter);
     this.httpRouterInstalled = true;
   }
 

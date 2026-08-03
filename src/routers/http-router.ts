@@ -6,8 +6,6 @@
  */
 
 import type { Context } from "../context/context";
-import type { Plugin } from "../types";
-import type { Runtime } from "../runtime";
 import * as path from "node:path";
 
 export type RouteHandler = (ctx: Context) => Promise<void> | void;
@@ -278,7 +276,7 @@ function radixHasAnyMethod(
   return false;
 }
 
-export class HTTPRouter implements Plugin {
+export class HTTPRouter {
   public readonly name = "sinwan:http-router";
 
   private readonly routes: HttpRoute[] = [];
@@ -288,8 +286,13 @@ export class HTTPRouter implements Plugin {
     return this.routes;
   }
 
-  // HTTPRouter-level middleware applied to all routes added AFTER this is called
+  // HTTPRouter-level middleware applied to all routes at resolve time.
   private readonly middlewares: RouteHandler[] = [];
+
+  /** Returns a copy of this router's middleware list (used by mount()). */
+  getMiddlewares(): RouteHandler[] {
+    return [...this.middlewares];
+  }
 
   private readonly staticRoutes: Record<
     SpecificMethod,
@@ -320,7 +323,7 @@ export class HTTPRouter implements Plugin {
 
   // ─── Middleware & Grouping ────────────────────────────────
 
-  /** Add HTTPRouter-level middleware. */
+  /** Add HTTPRouter-level middleware. Applied to all routes at resolve time. */
   use(...handlers: RouteHandler[]) {
     this.middlewares.push(...handlers);
   }
@@ -337,6 +340,10 @@ export class HTTPRouter implements Plugin {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
     const childRoutes = HTTPRouter.getRoutes();
     const childRouteCount = childRoutes.length;
+    // Prepend the child router's own middleware to each of its routes so it
+    // travels with the route when mounted into the parent. The parent's
+    // middleware is applied at resolve time in handle().
+    const childMiddleware = HTTPRouter.getMiddlewares();
     for (let routeIndex = 0; routeIndex < childRouteCount; routeIndex += 1) {
       const route = childRoutes[routeIndex];
       if (!route) continue;
@@ -344,7 +351,10 @@ export class HTTPRouter implements Plugin {
       let mergedPath = cleanPrefix + route.path;
       if (mergedPath === "" || mergedPath === "//") mergedPath = "/";
 
-      this.add(route.method, mergedPath, route.handlers);
+      this.add(route.method, mergedPath, [
+        ...childMiddleware,
+        ...route.handlers,
+      ]);
     }
   }
 
@@ -436,9 +446,8 @@ export class HTTPRouter implements Plugin {
 
   private add(method: HttpMethod, path: string, handlers: RouteHandler[]) {
     const normalized = normalizePath(path);
-    const finalHandlers = [...this.middlewares, ...handlers];
 
-    this.routes.push({ method, path: normalized, handlers: finalHandlers });
+    this.routes.push({ method, path: normalized, handlers });
 
     const hasParamsOrWildcard =
       normalized.includes(":") || normalized.includes("*");
@@ -446,12 +455,11 @@ export class HTTPRouter implements Plugin {
     if (method === "ALL") {
       if (!hasParamsOrWildcard) {
         const current = this.staticAll.get(normalized);
-        if (current)
-          this.staticAll.set(normalized, [...current, ...finalHandlers]);
-        else this.staticAll.set(normalized, finalHandlers);
+        if (current) this.staticAll.set(normalized, [...current, ...handlers]);
+        else this.staticAll.set(normalized, handlers);
       } else {
         const segments = splitPath(normalized);
-        radixInsert(this.radixAll, segments, 0, "ALL", finalHandlers);
+        radixInsert(this.radixAll, segments, 0, "ALL", handlers);
       }
       return;
     }
@@ -459,16 +467,13 @@ export class HTTPRouter implements Plugin {
     if (!hasParamsOrWildcard) {
       const current = this.staticRoutes[method].get(normalized);
       if (current)
-        this.staticRoutes[method].set(normalized, [
-          ...current,
-          ...finalHandlers,
-        ]);
-      else this.staticRoutes[method].set(normalized, finalHandlers);
+        this.staticRoutes[method].set(normalized, [...current, ...handlers]);
+      else this.staticRoutes[method].set(normalized, handlers);
       return;
     }
 
     const segments = splitPath(normalized);
-    radixInsert(this.radix[method], segments, 0, method, finalHandlers);
+    radixInsert(this.radix[method], segments, 0, method, handlers);
   }
 
   // ─── Resolution ───────────────────────────────────────────
@@ -667,64 +672,72 @@ export class HTTPRouter implements Plugin {
     }
   }
 
-  // ─── Plugin Installation ──────────────────────────────────
+  // ─── Request Handling ─────────────────────────────────────
 
-  install(app: Runtime): void {
-    // Capture `this` for use inside the step closure
-    const HttpRouter = this;
+  /**
+   * Resolve the incoming request against registered routes and run the
+   * matched handler chain. Called directly by the Runtime for HTTP requests.
+   *
+   * @param ctx     The request context (must have `req` set; HTTP only).
+   * @param onError Optional error handler invoked when a chain handler throws.
+   *                Receives the error; the error handler is expected to set a
+   *                response on the context.
+   * @returns A Promise when the chain is async, otherwise void.
+   */
+  handle(
+    ctx: Context,
+    onError?: (error: unknown) => Promise<void> | void,
+  ): void | Promise<void> {
+    if (ctx.tcp || ctx.udp || ctx.grpc) return;
+    const pathname = ctx.pathname || "/";
+    const match = this.resolve(ctx.req.method, pathname);
 
-    app.engine.add({
-      name: "http-router",
-      run: (ctx: Context) => {
-        if (ctx.tcp || ctx.udp || ctx.grpc) return;
-        const pathname = ctx.pathname || "/";
-        const match = HttpRouter.resolve(ctx.req.method, pathname);
+    // No route matched → auto 404
+    if (!match) {
+      ctx.json({ error: "Not Found", path: pathname }, 404);
+      return;
+    }
 
-        if (!match) return;
+    if (match.type === "method-not-allowed") {
+      ctx.json({ error: "Method Not Allowed" }, 405);
+      return;
+    }
 
-        if (match.type === "method-not-allowed") {
-          ctx.json({ error: "Method Not Allowed" }, 405);
-          return;
-        }
+    // Prepend this router's middleware at resolve time so it applies to all
+    // routes regardless of registration order.
+    const mw = this.middlewares;
+    const fullChain =
+      mw.length > 0 ? [...mw, ...match.handlers] : match.handlers;
 
-        const handleRouteError = (error: unknown) =>
-          app.errorHandler.handle(error, ctx);
+    ctx.params = match.params;
+    const result = HTTPRouter.runChain(ctx, fullChain, onError);
 
-        ctx.params = match.params;
-        const result = HTTPRouter.runChain(
-          ctx,
-          match.handlers,
-          handleRouteError,
-        );
-
-        if (result instanceof Promise) {
-          return (async () => {
-            await result;
-            if (ctx.hasResponded() || ctx.isStopped()) return;
-            if (match.source === "specific") {
-              const allMatch = HttpRouter.resolveAll(pathname);
-              if (allMatch) {
-                ctx.params = allMatch.params;
-                await HTTPRouter.runChain(
-                  ctx,
-                  allMatch.handlers,
-                  handleRouteError,
-                );
-              }
-            }
-          })();
-        }
-
+    if (result instanceof Promise) {
+      return (async () => {
+        await result;
         if (ctx.hasResponded() || ctx.isStopped()) return;
-
         if (match.source === "specific") {
-          const allMatch = HttpRouter.resolveAll(pathname);
-          if (!allMatch) return;
-
-          ctx.params = allMatch.params;
-          return HTTPRouter.runChain(ctx, allMatch.handlers, handleRouteError);
+          const allMatch = this.resolveAll(pathname);
+          if (allMatch) {
+            ctx.params = allMatch.params;
+            const allChain =
+              mw.length > 0 ? [...mw, ...allMatch.handlers] : allMatch.handlers;
+            await HTTPRouter.runChain(ctx, allChain, onError);
+          }
         }
-      },
-    });
+      })();
+    }
+
+    if (ctx.hasResponded() || ctx.isStopped()) return;
+
+    if (match.source === "specific") {
+      const allMatch = this.resolveAll(pathname);
+      if (!allMatch) return;
+
+      ctx.params = allMatch.params;
+      const allChain =
+        mw.length > 0 ? [...mw, ...allMatch.handlers] : allMatch.handlers;
+      return HTTPRouter.runChain(ctx, allChain, onError);
+    }
   }
 }

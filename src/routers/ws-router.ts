@@ -6,7 +6,7 @@
  *
  * Design:
  *  - Static hook table: Map<path, WSRouteConfig> — O(1) lookup, zero emitter overhead.
- *  - Upgrade step runs in the normal HTTP StepEngine pipeline. If the upgrade hook
+ *  - Upgrade interception runs before HTTP route resolution. If the upgrade hook
  *    calls ctx.json() / ctx.text(), the upgrade is rejected and a normal HTTP
  *    response is returned. Otherwise server.upgrade() is called and Bun handles 101.
  *  - WebSocket hooks use the same Context class as HTTP handlers.
@@ -14,7 +14,6 @@
 
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import type { Context, WSSData } from "../context/context";
-import type { Plugin } from "../types";
 import type { Runtime } from "../runtime";
 
 // ─── Public Types ──────────────────────────────────────────
@@ -121,7 +120,7 @@ type SinwanWebSocketHandler = WebSocketHandler<WSSData> & {
 
 // ─── WSRouter ─────────────────────────────────────────────
 
-export class WSRouter implements Plugin {
+export class WSRouter {
   public readonly name = "sinwan:ws-router";
 
   /** Static hook table. Keyed by normalized path. */
@@ -259,49 +258,57 @@ export class WSRouter implements Plugin {
     };
   }
 
-  // ─── Plugin Installation ────────────────────────────────
+  // ─── HTTP Upgrade Handling ───────────────────────────────
 
-  install(app: Runtime): void {
-    const routes = this.routes;
+  /**
+   * Attempt a WebSocket upgrade for the given HTTP request context.
+   * Called by the Runtime before HTTP route resolution.
+   *
+   * @param ctx    The request context (must have `req` set; HTTP only).
+   * @param server The Bun server, used to perform the protocol upgrade.
+   * @returns `true` if a WS route matched and the request was consumed
+   *          (either upgraded, rejected with a response, or failed with 500);
+   *          `false` if no WS route matched and the request should fall
+   *          through to the HTTP router. A Promise is returned when the
+   *          upgrade hook is async.
+   */
+  tryUpgrade(
+    ctx: Context,
+    server: Server<unknown> | undefined,
+  ): boolean | Promise<boolean> {
+    if (ctx.tcp || ctx.udp || ctx.grpc) return false;
+    if (!server) return false;
 
-    app.engine.add({
-      name: "sinwan:ws-upgrade",
-      run: (ctx: Context) => {
-        if (ctx.tcp || ctx.udp || ctx.grpc) return;
-        const server = ctx.server;
-        if (!server) return;
+    const pathname = this.extractPathname(ctx.req.url);
+    const entry = this.routes.get(pathname);
+    if (!entry) return false;
 
-        const url = ctx.req.url;
-        const pathname = this.extractPathname(url);
-        const entry = routes.get(pathname);
-        if (!entry) return;
+    return (async () => {
+      // Run optional upgrade hook — it may reject the connection
+      if (entry.config.upgrade) {
+        await entry.config.upgrade(ctx);
+        // If the upgrade hook set a response, bail out (rejection path)
+        if (ctx.hasResponded()) return true;
+      }
 
-        return (async () => {
-          // Run optional upgrade hook — it may reject the connection
-          if (entry.config.upgrade) {
-            await entry.config.upgrade(ctx);
-            // If the upgrade hook set a response, bail out (rejection path)
-            if (ctx.hasResponded()) return;
-          }
+      // Retrieve any user data set in the upgrade hook
+      const userData = ctx.get("ws:data");
 
-          // Retrieve any user data set in the upgrade hook
-          const userData = ctx.get("ws:data");
+      const success = (server as Server<WSSData>).upgrade(ctx.req, {
+        data: {
+          path: pathname,
+          data: userData ?? null,
+          state: ctx.exportState(),
+        },
+      });
 
-          const success = (server as Server<WSSData>).upgrade(ctx.req, {
-            data: {
-              path: pathname,
-              data: userData ?? null,
-              state: ctx.exportState(),
-            },
-          });
-
-          if (!success) {
-            ctx.json({ error: "WebSocket upgrade failed" }, 500);
-          }
-          // On success Bun sends 101 automatically — no response needed
-        })();
-      },
-    });
+      if (!success) {
+        ctx.json({ error: "WebSocket upgrade failed" }, 500);
+      }
+      // On success Bun sends 101 automatically — no response needed.
+      // Either way the request is consumed by this WS route.
+      return true;
+    })();
   }
 
   // ─── Helpers ──────────────────────────────────────────────

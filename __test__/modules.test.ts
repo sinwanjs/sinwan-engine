@@ -1,6 +1,5 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 import {
-  createStep,
   createPlugin,
   createHttpModule,
   createWSModule,
@@ -67,14 +66,6 @@ function createMockApp(): Sinwan {
       calls.push({ method: "all", args: [path, ...handlers] });
     },
     use(..._handlers: unknown[]) {},
-    group(prefix: string, callback: (router: HTTPRouter) => void) {
-      calls.push({ method: "group", args: [prefix] });
-      const childRouter = new HTTPRouter();
-      callback(childRouter);
-    },
-    mount(prefix: string, router: HTTPRouter) {
-      calls.push({ method: "mount", args: [prefix, router] });
-    },
     static(prefix: string, root: string) {
       calls.push({ method: "static", args: [prefix, root] });
     },
@@ -90,13 +81,18 @@ function createMockApp(): Sinwan {
     grpc(name: string, config: unknown) {
       calls.push({ method: "grpc", args: [name, config] });
     },
-    beforeTCP: () => ({}),
-    beforeUDP: () => ({}),
-    beforeGRPC: () => ({}),
     install: () => ({}),
-    add: () => ({}),
     register: (...modules: SinwanModule[]) => {
-      for (const m of modules) m.register(mockApp);
+      for (const m of modules) {
+        if ("type" in m && (m as { type?: string }).type === "http") {
+          (m.register as (app: Sinwan, router: HTTPRouter) => void)(
+            mockApp,
+            mockHttpRouter,
+          );
+        } else {
+          m.register(mockApp);
+        }
+      }
     },
     request: () => new Response(),
     listen: async () => ({}),
@@ -111,6 +107,7 @@ function createMockApp(): Sinwan {
   } as unknown as Sinwan & { _calls: { method: string; args: unknown[] }[] };
 }
 
+const mockHttpRouter = new HTTPRouter();
 const mockApp = createMockApp();
 
 function createMockProvider(): GRPCProvider {
@@ -127,24 +124,6 @@ const noopHandler = (): void => {};
 describe("modules", () => {
   beforeEach(() => {
     resetGRPCProvider();
-  });
-
-  // ─── createStep ──────────────────────────────────────────
-
-  describe("createStep", () => {
-    test("creates step from config object", () => {
-      const run = (): void => {};
-      const step = createStep({ name: "my-step", run });
-      expect(step.name).toBe("my-step");
-      expect(step.run).toBe(run);
-    });
-
-    test("creates step from name and run arguments", () => {
-      const run = (): void => {};
-      const step = createStep("my-step", run);
-      expect(step.name).toBe("my-step");
-      expect(step.run).toBe(run);
-    });
   });
 
   // ─── createPlugin ────────────────────────────────────────
@@ -198,29 +177,41 @@ describe("modules", () => {
       expect(mod.prefix).toBeUndefined();
     });
 
-    test("register with prefix calls app.group", () => {
+    test("register without httpRouter throws TypeError", () => {
       const app = createMockApp();
+      const mod = createHttpModule({
+        prefix: "/api",
+        routes: () => {},
+      });
+      expect(() => mod.register(app)).toThrow(TypeError);
+      expect(() => mod.register(app)).toThrow(/HTTPRouter/);
+    });
+
+    test("register with prefix calls httpRouter.group", () => {
+      const app = createMockApp();
+      const httpRouter = new HTTPRouter();
       const mod = createHttpModule({
         prefix: "/api",
         routes: (router) => {
           router.get("/users", noopHandler);
         },
       });
-      mod.register(app);
-      const calls = (app as unknown as { _calls: { method: string }[] })._calls;
-      expect(calls.some((c) => c.method === "group")).toBe(true);
+      mod.register(app, httpRouter);
+      // group() mounts child routes into the parent router
+      expect(httpRouter.getRoutes().length).toBe(1);
     });
 
-    test("register without prefix calls app.mount", () => {
+    test("register without prefix calls httpRouter.mount", () => {
       const app = createMockApp();
+      const httpRouter = new HTTPRouter();
       const mod = createHttpModule({
         routes: (router) => {
           router.get("/users", noopHandler);
         },
       });
-      mod.register(app);
-      const calls = (app as unknown as { _calls: { method: string }[] })._calls;
-      expect(calls.some((c) => c.method === "mount")).toBe(true);
+      mod.register(app, httpRouter);
+      // mount("/", tempRouter) merges temp routes into the parent router
+      expect(httpRouter.getRoutes().length).toBe(1);
     });
   });
 
@@ -302,7 +293,6 @@ describe("modules", () => {
     });
 
     test("fluent router actually registers routes on the HTTPRouter", () => {
-      let routeCount = 0;
       const mod = createHttpModule({
         routes: (r) => {
           r.get("/a", noopHandler);
@@ -316,14 +306,10 @@ describe("modules", () => {
         },
       });
       const app = createMockApp();
-      mod.register(app);
-      const calls = (
-        app as unknown as { _calls: { method: string; args: unknown[] }[] }
-      )._calls;
-      const mountCall = calls.find((c) => c.method === "mount");
-      expect(mountCall).toBeDefined();
-      routeCount = (mountCall!.args[1] as HTTPRouter).getRoutes().length;
-      expect(routeCount).toBe(8);
+      const httpRouter = new HTTPRouter();
+      mod.register(app, httpRouter);
+      // mount("/", tempRouter) merges all 8 routes into the parent router
+      expect(httpRouter.getRoutes().length).toBe(8);
     });
 
     test("fluent router use adds middleware", () => {
@@ -334,14 +320,10 @@ describe("modules", () => {
         },
       });
       const app = createMockApp();
-      mod.register(app);
-      const calls = (
-        app as unknown as { _calls: { method: string; args: unknown[] }[] }
-      )._calls;
-      const mountCall = calls.find((c) => c.method === "mount");
-      expect(mountCall).toBeDefined();
+      const httpRouter = new HTTPRouter();
+      mod.register(app, httpRouter);
       // use doesn't add routes, it adds middleware
-      expect((mountCall!.args[1] as HTTPRouter).getRoutes().length).toBe(0);
+      expect(httpRouter.getRoutes().length).toBe(0);
     });
 
     test("fluent router group creates sub-routes", () => {
@@ -354,14 +336,10 @@ describe("modules", () => {
         },
       });
       const app = createMockApp();
-      mod.register(app);
-      const calls = (
-        app as unknown as { _calls: { method: string; args: unknown[] }[] }
-      )._calls;
-      const mountCall = calls.find((c) => c.method === "mount");
-      expect(mountCall).toBeDefined();
-      // group mounts child routes, so parent router gets them
-      expect((mountCall!.args[1] as HTTPRouter).getRoutes().length).toBe(2);
+      const httpRouter = new HTTPRouter();
+      mod.register(app, httpRouter);
+      // group mounts child routes into the parent router
+      expect(httpRouter.getRoutes().length).toBe(2);
     });
 
     test("fluent router mount adds routes from another router", () => {
@@ -373,13 +351,12 @@ describe("modules", () => {
         },
       });
       const app = createMockApp();
-      mod.register(app);
-      const calls = (
-        app as unknown as { _calls: { method: string; args: unknown[] }[] }
-      )._calls;
-      const mountCall = calls.find((c) => c.method === "mount");
-      expect(mountCall).toBeDefined();
-      expect((mountCall!.args[1] as HTTPRouter).getRoutes().length).toBe(1);
+      const httpRouter = new HTTPRouter();
+      mod.register(app, httpRouter);
+      // mount("/", tempRouter) merges temp routes (which include the nested
+      // mount) into the parent router — the nested route is prefixed and
+      // added as a single route
+      expect(httpRouter.getRoutes().length).toBe(1);
     });
 
     test("fluent router static registers a static route", () => {
@@ -389,13 +366,9 @@ describe("modules", () => {
         },
       });
       const app = createMockApp();
-      mod.register(app);
-      const calls = (
-        app as unknown as { _calls: { method: string; args: unknown[] }[] }
-      )._calls;
-      const mountCall = calls.find((c) => c.method === "mount");
-      expect(mountCall).toBeDefined();
-      expect((mountCall!.args[1] as HTTPRouter).getRoutes().length).toBe(1);
+      const httpRouter = new HTTPRouter();
+      mod.register(app, httpRouter);
+      expect(httpRouter.getRoutes().length).toBe(1);
     });
   });
 

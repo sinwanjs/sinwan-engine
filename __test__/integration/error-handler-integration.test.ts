@@ -460,6 +460,16 @@ describe("ErrorHandler — Integration Tests", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.error).toBe("No response was produced.");
     });
+
+    test("unknown route returns 404 (auto-404)", async () => {
+      const app = new Sinwan();
+      app.get("/known", (ctx) => ctx.json({ ok: true }));
+
+      const res = await app.request("http://localhost/unknown");
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("Not Found");
+    });
   });
 
   // ─── Error after partial response ────────────────────────
@@ -553,9 +563,9 @@ describe("ErrorHandler — Integration Tests", () => {
   // ─── Middleware error propagation ────────────────────────
 
   describe("middleware error propagation", () => {
-    test("error in step is caught", async () => {
+    test("error in middleware is caught", async () => {
       const app = new Sinwan();
-      app.add("throwing-step", () => {
+      app.use(() => {
         throw new Error("step error");
       });
       app.get("/step-test", (ctx) => {
@@ -568,9 +578,9 @@ describe("ErrorHandler — Integration Tests", () => {
       expect(body.error).toBe("step error");
     });
 
-    test("async error in step is caught", async () => {
+    test("async error in middleware is caught", async () => {
       const app = new Sinwan();
-      app.add("async-throwing-step", async () => {
+      app.use(async () => {
         await Promise.resolve();
         throw new Error("async step error");
       });

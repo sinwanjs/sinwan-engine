@@ -5,7 +5,7 @@ import {
   type WSOptions,
 } from "../../src/routers/ws-router";
 import { Runtime, type RuntimeConfig } from "../../src/runtime";
-import { StepEngine } from "../../src/step-engine";
+import { HTTPRouter } from "../../src/routers/http-router";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
 import { Context } from "../../src/context/context";
@@ -14,11 +14,17 @@ import type { ServerWebSocket, Server } from "bun";
 import type { Request } from "../../src/types";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
-  const engine = new StepEngine();
   const bus = new EventBus();
   const errorHandler = new ErrorHandler();
   const globalState = new Map<string, unknown>();
-  return new Runtime({ engine, bus, errorHandler, globalState, ...overrides });
+  const httpRouter = new HTTPRouter();
+  return new Runtime({
+    bus,
+    errorHandler,
+    globalState,
+    httpRouter,
+    ...overrides,
+  });
 }
 
 function createMockReq(
@@ -61,44 +67,27 @@ describe("WSRouter", () => {
       expect(router.name).toBe("sinwan:ws-router");
     });
 
-    test("install() registers a step in the engine", () => {
-      const router = new WSRouter();
-      const engine = new StepEngine();
-      const runtime = createRuntime({ engine });
-      router.install(runtime);
-      // Step should be registered — fetching will run it
-      expect(engine).toBeDefined();
-    });
-
-    test("install() step skips non-HTTP contexts", async () => {
+    test("tryUpgrade skips non-HTTP contexts", async () => {
       const router = new WSRouter();
       router.ws("/ws", { open: () => {} });
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext();
       ctx.setReq(createMockReq());
       ctx.setTCP({} as never);
-      engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, undefined);
+      expect(result).toBe(false);
       expect(ctx.hasResponded()).toBe(false);
     });
 
-    test("install() step skips when no server", async () => {
+    test("tryUpgrade skips when no server", async () => {
       const router = new WSRouter();
       router.ws("/ws", { open: () => {} });
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext();
       ctx.setReq(createMockReq());
-      // No server set — should skip
-      engine.run(ctx, bus);
+      // No server set — should not consume
+      const result = router.tryUpgrade(ctx, undefined);
+      expect(result).toBe(false);
       expect(ctx.hasResponded()).toBe(false);
     });
   });
@@ -570,9 +559,9 @@ describe("WSRouter", () => {
     });
   });
 
-  // ─── install() — upgrade flow ────────────────────────────
+  // ─── tryUpgrade — upgrade flow ───────────────────────────
 
-  describe("install() — upgrade flow", () => {
+  describe("tryUpgrade() — upgrade flow", () => {
     test("upgrade succeeds when server.upgrade returns true", async () => {
       const router = new WSRouter();
       let upgradeCalled = false;
@@ -588,18 +577,14 @@ describe("WSRouter", () => {
         }),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/ws"));
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
       expect(upgradeCalled).toBe(true);
+      // Consumed by the WS route, but no HTTP response set (Bun sent 101)
       expect(ctx.hasResponded()).toBe(false);
     });
 
@@ -610,17 +595,14 @@ describe("WSRouter", () => {
         upgrade: mock(() => false),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/ws"));
-      const result = engine.run(ctx, bus);
-      if (result instanceof Promise) await result;
+      const result = router.tryUpgrade(ctx, mockServer);
+      const consumed = await result;
       await flushPromises();
+      // Consumed by the WS route, with a 500 rejection response
+      expect(consumed).toBe(true);
       expect(ctx.hasResponded()).toBe(true);
       expect(ctx.statusCode).toBe(500);
     });
@@ -636,18 +618,14 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/ws"));
-      const result = engine.run(ctx, bus);
-      if (result instanceof Promise) await result;
+      const result = router.tryUpgrade(ctx, mockServer);
+      const consumed = await result;
       await flushPromises();
-      // Upgrade hook set a response, so upgrade should not be called
+      // Consumed by the WS route (rejection path)
+      expect(consumed).toBe(true);
       expect(ctx.hasResponded()).toBe(true);
       expect(ctx.statusCode).toBe(401);
       expect(mockServer.upgrade).not.toHaveBeenCalled();
@@ -660,17 +638,14 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/other"));
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
+      // Not consumed — should fall through to HTTP
+      expect(result).toBe(false);
       expect(mockServer.upgrade).not.toHaveBeenCalled();
       expect(ctx.hasResponded()).toBe(false);
     });
@@ -689,15 +664,10 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/ws"));
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
       expect(hookCompleted).toBe(true);
@@ -711,15 +681,10 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/ws/"));
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
       expect(mockServer.upgrade).toHaveBeenCalled();
@@ -732,15 +697,10 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(createMockReq("http://localhost/ws?token=abc"));
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
       expect(mockServer.upgrade).toHaveBeenCalled();
@@ -757,16 +717,11 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       // Create a request with a relative-looking URL
       ctx.setReq(new Request("http://localhost/ws") as unknown as Request);
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
       expect(mockServer.upgrade).toHaveBeenCalled();
@@ -779,15 +734,10 @@ describe("WSRouter", () => {
         upgrade: mock(() => true),
         publish: mock(() => 0),
       } as unknown as Server<unknown>;
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       const ctx = runtime.acquireContext(mockServer);
       ctx.setReq(new Request("http://localhost") as unknown as Request);
-      const result = engine.run(ctx, bus);
+      const result = router.tryUpgrade(ctx, mockServer);
       if (result instanceof Promise) await result;
       await flushPromises();
       // extractPathname returns "/" for URL with no path

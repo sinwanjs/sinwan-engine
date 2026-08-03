@@ -8,7 +8,6 @@
 
 export { Context, type ContextOptions } from "./context/context";
 export type { GRPCData, TCPData, WSSData, UDPData } from "./context/context";
-export { StepEngine } from "./step-engine";
 export { EventBus, type EventBusOptions } from "./event-bus";
 export { ErrorHandler, type ErrorHandlerOptions } from "./error-handler";
 export type {
@@ -29,8 +28,6 @@ export {
 } from "./lifecycle-manager";
 // ─── Functions ────────────────────────────────────────────
 
-export { buildResponse } from "./response";
-export { SocketHelper } from "./context/socket-helper";
 export {
   InternalAssets,
   type InternalAssetsOptions,
@@ -39,7 +36,6 @@ export {
 } from "./internal-assets";
 
 export {
-  createStep,
   createPlugin,
   createHttpModule,
   createWSModule,
@@ -48,7 +44,6 @@ export {
   createGRPCModule,
 } from "./modules";
 export type {
-  StepConfig,
   PluginConfig,
   SinwanModule,
   HTTPModule,
@@ -109,13 +104,9 @@ export {
   hasGRPCProvider,
 } from "./context/grpc-provider";
 
-export { captureRejectionSymbol, errorMonitor } from "node:events";
-
 // ─── Types ────────────────────────────────────────────────
 
 export type {
-  Step,
-  StepResult,
   EventHandler,
   EventMap,
   EventSource,

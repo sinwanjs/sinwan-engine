@@ -19,7 +19,7 @@
 
 <br clear="both" />
 
-Sinwan Engine gives you a step-based middleware pipeline, a typed event bus, a deterministic lifecycle manager, context pooling, and protocol routers for HTTP, WebSocket, TCP, UDP, and gRPC — all from a single `Sinwan` application instance built on Bun.
+Sinwan Engine gives you an engine-driven request pipeline, a typed event bus, a deterministic lifecycle manager, context pooling, and protocol routers for HTTP, WebSocket, TCP, UDP, and gRPC — all from a single `Sinwan` application instance built on Bun.
 
 ## Install
 
@@ -49,10 +49,62 @@ await app.listen(3000, ({ port }) => {
 });
 ```
 
+## Middleware Patterns
+
+Sinwan uses an **engine-driven** chain runner — handlers receive only `ctx` (no `next()`). The engine advances the chain itself, so you can't forget to call `next()`. For before/after middleware, use these substitutes:
+
+### Before (runs before route handlers)
+
+```ts
+app.use((ctx) => {
+  console.log(`[HTTP] ${ctx.req.method} ${ctx.req.url}`);
+});
+```
+
+### After a handler commits a response
+
+```ts
+app.get("/users", async (ctx) => {
+  ctx.once("response:set", (c, { statusCode }) => {
+    console.log(`responded ${statusCode}`);
+  });
+  ctx.json(await listUsers());
+});
+```
+
+### After the request finishes (app-level timing)
+
+```ts
+app.bus.on("request:end", (ctx, { durationMs }) => {
+  console.log(`${ctx.req.method} ${ctx.req.url} — ${durationMs.toFixed(1)}ms`);
+});
+```
+
+### Cleanup after the response is sent
+
+```ts
+app.use((ctx) => {
+  const handle = acquireHandle();
+  ctx.onDispose(() => handle.release()); // runs during context teardown
+});
+```
+
+### Catch errors from async operations
+
+```ts
+app.get("/risky", async (ctx) => {
+  try {
+    ctx.json(await riskyOp());
+  } catch (error) {
+    await ctx.catch(error); // delegates to the ErrorHandler, sets an error response
+  }
+});
+```
+
 ## Features
 
 - **Multi-protocol**: HTTP, WebSocket, TCP, UDP, and gRPC from one engine
-- **Step pipeline**: Named, deterministic middleware steps — no `next()` chaining
+- **Engine-driven pipeline**: Explicit orchestration in `Runtime.fetch()` — no `next()` chaining
 - **Event bus**: Typed events with wildcards, AbortSignal support, and tracing
 - **Lifecycle manager**: Five-phase lifecycle (`idle → init → ready → shutdown → destroyed`)
 - **Context pooling**: Reusable per-request context with state, global state, and response helpers

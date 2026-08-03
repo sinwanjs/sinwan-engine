@@ -29,39 +29,13 @@ import type { WSRouteConfig } from "./routers/ws-router";
 import type { TCPRouteConfig } from "./routers/tcp-router";
 import { getGRPCProvider } from "./context/grpc-provider";
 import type { UDPRouteConfig } from "./routers/udp-router";
-import type { Plugin, Step } from "./types";
+import type { Plugin } from "./types";
 
 // ─── Core Module Interface ─────────────────────────────────
 
 export interface SinwanModule {
   readonly name: string;
   readonly register: (app: Sinwan) => void;
-}
-
-// ─── Step Factory ───────────────────────────────────────────
-
-export interface StepConfig {
-  name: string;
-  run: Step["run"];
-}
-
-export function createStep(config: StepConfig): Step;
-export function createStep(name: string, run: Step["run"]): Step;
-export function createStep(
-  configOrName: StepConfig | string,
-  run?: Step["run"],
-): Step {
-  if (typeof configOrName === "string") {
-    return {
-      name: configOrName,
-      run: run!,
-    };
-  }
-
-  return {
-    name: configOrName.name,
-    run: configOrName.run,
-  };
 }
 
 // ─── Plugin Factory ─────────────────────────────────────────
@@ -104,6 +78,8 @@ export interface HTTPModuleConfig {
 export interface HTTPModule extends SinwanModule {
   readonly type: "http";
   readonly prefix?: string;
+  /** Receives the app and the internal HTTPRouter (passed by Sinwan.register). */
+  readonly register: (app: Sinwan, httpRouter?: HTTPRouter) => void;
 }
 
 /**
@@ -190,16 +166,22 @@ export function createHttpModule(config: HTTPModuleConfig): HTTPModule {
     type: "http",
     name: config.description ?? `http:${config.prefix ?? "/"}`,
     prefix: config.prefix,
-    register(app) {
+    // The HTTPRouter is passed by Sinwan.register() as the second argument.
+    register(app, httpRouter) {
+      if (!httpRouter) {
+        throw new TypeError(
+          `[HTTPModule "${config.description ?? config.prefix ?? "/"}"] register() requires an HTTPRouter. Use app.register() instead of calling register() directly.`,
+        );
+      }
       if (config.prefix) {
-        app.group(config.prefix, (router) => {
+        httpRouter.group(config.prefix, (router) => {
           config.routes(createFluentRouter(router));
         });
       } else {
         // For root-level HTTP modules, create a temp router and mount it
         const router = new HTTPRouter();
         config.routes(createFluentRouter(router));
-        app.mount("/", router);
+        httpRouter.mount("/", router);
       }
     },
   };

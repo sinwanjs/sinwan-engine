@@ -8,7 +8,6 @@
 
 import type { BunRequest } from "bun";
 import type { Context } from "./context/context";
-import type { EventBus } from "./event-bus";
 
 // ─── Lifecycle System ─────────────────────────────────────────
 
@@ -21,28 +20,6 @@ export enum LifecycleState {
 }
 
 export type LifecycleEvent = "init" | "ready" | "shutdown" | "destroy";
-
-// ─── Step System ────────────────────────────────────────────
-
-/** Discriminated union returned by a Step's run() method. */
-export type StepResult =
-  | { type: "continue" }
-  | { type: "stop" }
-  | { type: "error"; error: unknown }
-  | { type: "skip" }
-  | { type: "respond" };
-
-/**
- * A named, deterministic execution unit.
- * Steps execute sequentially — no next(), no chaining.
- */
-export type Step = {
-  readonly name: string;
-  run(
-    ctx: Context,
-    bus: EventBus,
-  ): Promise<StepResult | void> | StepResult | void;
-};
 
 // ─── Event System ───────────────────────────────────────────
 
@@ -159,18 +136,6 @@ export interface InternalEventPayloads {
   "request:start": { method: string; url: string };
   "request:end": { durationMs: number };
   "request:error": { error: unknown };
-  "step:start": { name: string };
-  "step:end": {
-    name: string;
-    outcome:
-      | "continue"
-      | "stop"
-      | "responded"
-      | "stopped"
-      | "skipped"
-      | "responded_early";
-  };
-  "step:error": { name: string; error: unknown };
   "response:set": {
     kind:
       | "json"
@@ -240,7 +205,7 @@ import type { Runtime } from "./runtime";
  */
 export interface Plugin {
   readonly name: string;
-  install(app: Runtime): void;
+  install(runtime: Runtime): void;
 }
 
 export interface Request<T extends string = string> extends BunRequest<T> {}

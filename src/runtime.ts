@@ -1,7 +1,12 @@
 /**
  * SinwanJS Core Runtime — Runtime Orchestrator
  *
- * Top-level composition of StepEngine, EventBus, and ErrorHandler.
+ * Top-level composition of HTTPRouter, WSRouter, InternalAssets, EventBus,
+ * and ErrorHandler. Request handling is explicit orchestration (no step engine):
+ *
+ *   1. InternalAssets gate (favicon/robots/block/passthrough) — optional.
+ *   2. WS upgrade — intercepts the request before HTTP routing if a WS route matches.
+ *   3. HTTPRouter — resolves the route and runs the handler chain.
  */
 
 import { Context } from "./context/context";
@@ -9,23 +14,32 @@ import { buildResponse } from "./response";
 import type { ErrorHandler } from "./error-handler";
 import type { ErrorNormalizer } from "./error-normalizer";
 import type { EventBus } from "./event-bus";
-import type { StepEngine } from "./step-engine";
+import { HTTPRouter } from "./routers/http-router";
+import { WSRouter } from "./routers/ws-router";
+import { InternalAssets } from "./internal-assets";
 import type { Plugin } from "./types";
 import type { Request } from "./types";
 import type { Server } from "bun";
 
 export interface RuntimeConfig {
-  engine: StepEngine;
   bus: EventBus;
   errorHandler: ErrorHandler;
   globalState: Map<string, unknown>;
+  /** HTTP router used for HTTP request resolution. */
+  httpRouter: HTTPRouter;
+  /** Optional internal-assets gate that runs before WS/HTTP. */
+  internalAssets?: InternalAssets;
+  /** Optional WebSocket router for HTTP upgrade interception. */
+  wsRouter?: WSRouter;
   maxPoolSize?: number;
 }
 
 export class Runtime {
-  public readonly engine: StepEngine;
   public readonly bus: EventBus;
   public readonly errorHandler: ErrorHandler;
+  public readonly httpRouter: HTTPRouter;
+  public readonly internalAssets?: InternalAssets;
+  public readonly wsRouter?: WSRouter;
   private readonly globalState: Map<string, unknown>;
   private readonly contextPool: Context[] = [];
   private readonly maxPoolSize: number;
@@ -33,10 +47,12 @@ export class Runtime {
   private readonly runtimeEmitOptions = { source: "runtime" as const };
 
   constructor(params: RuntimeConfig) {
-    this.engine = params.engine;
     this.bus = params.bus;
     this.errorHandler = params.errorHandler;
     this.globalState = params.globalState;
+    this.httpRouter = params.httpRouter;
+    this.internalAssets = params.internalAssets;
+    this.wsRouter = params.wsRouter;
     this.maxPoolSize = params.maxPoolSize ?? 1000;
   }
 
@@ -53,8 +69,9 @@ export class Runtime {
   }
 
   /**
-   * The main fetch handler for Bun.serve()
-   * Automatically creates or reuses a Context, executes the pipeline, and returns a Response.
+   * The main fetch handler for Bun.serve().
+   * Creates or reuses a Context, runs the explicit request pipeline
+   * (internal-assets → WS upgrade → HTTP router), and returns a Response.
    */
   fetch(req: Request, server?: Server<unknown>): Response | Promise<Response> {
     const ctx = this.acquireContext(server);
@@ -63,25 +80,64 @@ export class Runtime {
     const bus = this.bus;
     const hasEnd = bus.hasListeners("request:end");
     const startTime = hasEnd ? performance.now() : 0;
-
-    // Fast-path: check if we can run synchronously
     const hasStart = bus.hasListeners("request:start");
 
+    // Run stages 2+3 (WS upgrade + HTTP router). Stage 1 (internal assets) is
+    // a synchronous gate handled by the caller before invoking this.
+    const runRest = (): void | Promise<void> => {
+      // 2. WS upgrade — intercepts the request before HTTP routing
+      const wsRouter = this.wsRouter;
+      if (wsRouter && wsRouter.hasRoutes()) {
+        const ws = wsRouter.tryUpgrade(ctx, server);
+        if (ws instanceof Promise) {
+          return (async () => {
+            if (await ws) return; // consumed by a WS route
+            await this.runHttp(ctx);
+          })();
+        }
+        if (ws) return; // consumed by a WS route
+      }
+      // 3. HTTP router
+      return this.runHttp(ctx);
+    };
+
+    if (hasStart) {
+      return (async () => {
+        try {
+          const startResult = await bus.emitAsync(
+            "request:start",
+            ctx,
+            { method: req.method, url: req.url },
+            this.runtimeEmitOptions,
+          );
+          if (startResult === "STOP" || ctx.isStopped()) {
+            return this.finalizeResponse(ctx, startTime);
+          }
+          // 1. Internal-assets gate (sync)
+          if (this.gateInternalAssets(ctx)) {
+            return this.finalizeResponse(ctx, startTime);
+          }
+          const r = runRest();
+          if (r instanceof Promise) await r;
+          return this.finalizeResponse(ctx, startTime);
+        } catch (error: unknown) {
+          await this.handleError(ctx, error);
+          return this.finalizeResponse(ctx, startTime);
+        }
+      })();
+    }
+
+    // No request:start listener — try a synchronous fast path.
     try {
-      if (hasStart) {
+      // 1. Internal-assets gate (sync)
+      if (this.gateInternalAssets(ctx)) {
+        return this.finalizeResponse(ctx, startTime);
+      }
+      const r = runRest();
+      if (r instanceof Promise) {
         return (async () => {
           try {
-            const startResult = await bus.emitAsync(
-              "request:start",
-              ctx,
-              { method: req.method, url: req.url },
-              this.runtimeEmitOptions,
-            );
-            if (startResult === "STOP" || ctx.isStopped()) {
-              return this.finalizeResponse(ctx, startTime);
-            }
-            const runResult = this.engine.run(ctx, bus);
-            if (runResult instanceof Promise) await runResult;
+            await r;
             return this.finalizeResponse(ctx, startTime);
           } catch (error: unknown) {
             await this.handleError(ctx, error);
@@ -89,28 +145,35 @@ export class Runtime {
           }
         })();
       }
-
-      const runResult = this.engine.run(ctx, bus);
-      if (runResult instanceof Promise) {
-        return (async () => {
-          try {
-            await runResult;
-            return this.finalizeResponse(ctx, startTime);
-          } catch (error: unknown) {
-            await this.handleError(ctx, error);
-            return this.finalizeResponse(ctx, startTime);
-          }
-        })();
-      }
-
       return this.finalizeResponse(ctx, startTime);
     } catch (error: unknown) {
-      // Sync error in runResult or before runResult
       return (async () => {
         await this.handleError(ctx, error);
         return this.finalizeResponse(ctx, startTime);
       })();
     }
+  }
+
+  /**
+   * Stage 1: run the internal-assets gate. Returns `true` if the request was
+   * consumed (handled or passthrough) and the pipeline should stop.
+   */
+  private gateInternalAssets(ctx: Context): boolean {
+    const assets = this.internalAssets;
+    if (!assets) return false;
+    const result = assets.handle(ctx);
+    if (result === "continue") return false;
+    // "handled" (response set) or "passthrough" (stop, no response → 500)
+    return true;
+  }
+
+  /**
+   * Stage 3: run the HTTP router against the context.
+   */
+  private runHttp(ctx: Context): void | Promise<void> {
+    return this.httpRouter.handle(ctx, (error) =>
+      this.errorHandler.handle(error, ctx),
+    );
   }
 
   private finalizeResponse(ctx: Context, startTime: number): Response {

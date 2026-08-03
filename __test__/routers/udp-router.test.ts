@@ -7,17 +7,23 @@ import {
   type SinwanUDPSocket,
 } from "../../src/routers/udp-router";
 import { Runtime, type RuntimeConfig } from "../../src/runtime";
-import { StepEngine } from "../../src/step-engine";
+import { HTTPRouter } from "../../src/routers/http-router";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
 import type { Context, UDPData } from "../../src/context/context";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
-  const engine = new StepEngine();
   const bus = new EventBus();
   const errorHandler = new ErrorHandler();
   const globalState = new Map<string, unknown>();
-  return new Runtime({ engine, bus, errorHandler, globalState, ...overrides });
+  const httpRouter = new HTTPRouter();
+  return new Runtime({
+    bus,
+    errorHandler,
+    globalState,
+    httpRouter,
+    ...overrides,
+  });
 }
 
 function createMockUDPSocket(

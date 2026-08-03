@@ -1,7 +1,7 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { Sinwan } from "../src/sinwan";
 import { LifecycleState } from "../src/types";
-import type { Plugin, Step } from "../src/types";
+import type { Plugin } from "../src/types";
 import type { SinwanModule } from "../src/modules";
 import {
   registerGRPCProvider,
@@ -203,82 +203,6 @@ describe("Sinwan", () => {
     });
   });
 
-  // ─── add() ───────────────────────────────────────────────
-
-  describe("add()", () => {
-    test("adds a named step (string + function)", () => {
-      const app = new Sinwan();
-      const result = app.add("auth", () => {});
-      expect(result).toBe(app);
-    });
-
-    test("adds a step object", () => {
-      const app = new Sinwan();
-      const step: Step = { name: "cors", run: () => {} };
-      const result = app.add(step);
-      expect(result).toBe(app);
-    });
-
-    test("throws for empty step name (string form)", () => {
-      const app = new Sinwan();
-      expect(() => app.add("", () => {})).toThrow(
-        "[Sinwan.add] Step name cannot be empty.",
-      );
-    });
-
-    test("throws for non-function run (string form)", () => {
-      const app = new Sinwan();
-      expect(() =>
-        app.add("test", "not-a-fn" as unknown as Step["run"]),
-      ).toThrow(
-        '[Sinwan.add] Second argument must be a function for step "test".',
-      );
-    });
-
-    test("throws for non-object step (object form)", () => {
-      const app = new Sinwan();
-      expect(() => app.add(null as unknown as Step)).toThrow(
-        "[Sinwan.add] Expected a Step object.",
-      );
-    });
-
-    test("throws for step without name (object form)", () => {
-      const app = new Sinwan();
-      expect(() => app.add({ name: "", run: () => {} } as Step)).toThrow(
-        '[Sinwan.add] Step must have a non-empty string "name".',
-      );
-    });
-
-    test("throws for step with non-string name (object form)", () => {
-      const app = new Sinwan();
-      expect(() =>
-        app.add({ name: 123, run: () => {} } as unknown as Step),
-      ).toThrow('[Sinwan.add] Step must have a non-empty string "name".');
-    });
-
-    test("throws for step without run method (object form)", () => {
-      const app = new Sinwan();
-      expect(() => app.add({ name: "test" } as unknown as Step)).toThrow(
-        '[Sinwan.add] Step "test" must have a "run" method.',
-      );
-    });
-
-    test("throws for step with non-function run (object form)", () => {
-      const app = new Sinwan();
-      expect(() =>
-        app.add({ name: "test", run: "not-a-fn" } as unknown as Step),
-      ).toThrow('[Sinwan.add] Step "test" must have a "run" method.');
-    });
-
-    test("throws for duplicate step name", () => {
-      const app = new Sinwan();
-      app.add("dup", () => {});
-      expect(() => app.add("dup", () => {})).toThrow(
-        'Duplicate step name "dup"',
-      );
-    });
-  });
-
   // ─── register() ──────────────────────────────────────────
 
   describe("register()", () => {
@@ -441,6 +365,108 @@ describe("Sinwan", () => {
     });
   });
 
+  // ─── use() ───────────────────────────────────────────────
+
+  describe("use()", () => {
+    test("registers middleware and returns this for chaining", () => {
+      const app = new Sinwan();
+      const result = app.use(() => {});
+      expect(result).toBe(app);
+    });
+
+    test("supports multiple handlers", () => {
+      const app = new Sinwan();
+      expect(
+        app.use(
+          () => {
+            return;
+          },
+          () => {
+            return;
+          },
+        ),
+      ).toBe(app);
+    });
+
+    test("runs middleware before route handlers", async () => {
+      const app = new Sinwan();
+      const order: string[] = [];
+      app.use((ctx) => {
+        order.push("middleware");
+        ctx.headers.set("x-mw", "1");
+      });
+      app.get("/test", (ctx) => {
+        order.push("route");
+        ctx.json({ ok: true });
+      });
+      const res = await app.request("/test");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-mw")).toBe("1");
+      expect(order).toEqual(["middleware", "route"]);
+    });
+
+    test("runs multiple middleware in registration order", async () => {
+      const app = new Sinwan();
+      const order: string[] = [];
+      app.use(
+        (ctx) => {
+          order.push("first");
+          ctx.set("a", 1);
+        },
+        (ctx) => {
+          order.push("second");
+          ctx.set("b", 2);
+        },
+      );
+      app.get("/test", (ctx) => {
+        order.push("route");
+        ctx.json({ a: ctx.get("a"), b: ctx.get("b") });
+      });
+      const res = await app.request("/test");
+      expect(res.status).toBe(200);
+      expect(order).toEqual(["first", "second", "route"]);
+      expect(await res.json()).toEqual({ a: 1, b: 2 });
+    });
+
+    test("applies to routes registered before use() (order-independent)", async () => {
+      const app = new Sinwan();
+      app.get("/early", (ctx) => ctx.json({ ok: true }));
+      app.use((ctx) => ctx.headers.set("x-mw", "1"));
+      app.get("/late", (ctx) => ctx.json({ ok: true }));
+      const early = await app.request("/early");
+      const late = await app.request("/late");
+      // Middleware now applies to all routes regardless of registration order
+      expect(early.headers.get("x-mw")).toBe("1");
+      expect(late.headers.get("x-mw")).toBe("1");
+    });
+
+    test("throws for no handlers", () => {
+      const app = new Sinwan();
+      expect(() => app.use()).toThrow(
+        "[Sinwan.use] At least one handler is required.",
+      );
+    });
+
+    test("throws for non-function handler", () => {
+      const app = new Sinwan();
+      expect(() => app.use("not-a-fn" as unknown as () => void)).toThrow(
+        "[Sinwan.use] Handler at index 0 must be a function.",
+      );
+    });
+
+    test("throws for non-function handler at index > 0", () => {
+      const app = new Sinwan();
+      expect(() =>
+        app.use(
+          () => {
+            return;
+          },
+          123 as unknown as () => void,
+        ),
+      ).toThrow("[Sinwan.use] Handler at index 1 must be a function.");
+    });
+  });
+
   // ─── ws() ────────────────────────────────────────────────
 
   describe("ws()", () => {
@@ -547,25 +573,9 @@ describe("Sinwan", () => {
     });
   });
 
-  // ─── beforeTCP() / beforeUDP() / beforeGRPC() ───────────
+  // ─── beforeGRPC() ───────────────────────────────────────
 
-  describe("beforeTCP() / beforeUDP() / beforeGRPC()", () => {
-    test("beforeTCP registers a bus listener", () => {
-      const app = new Sinwan();
-      const handler = () => {};
-      const result = app.beforeTCP("open", handler);
-      expect(result).toBe(app);
-      expect(app.bus.hasListeners("tcp:open")).toBe(true);
-    });
-
-    test("beforeUDP registers a bus listener", () => {
-      const app = new Sinwan();
-      const handler = () => {};
-      const result = app.beforeUDP("data", handler);
-      expect(result).toBe(app);
-      expect(app.bus.hasListeners("udp:data")).toBe(true);
-    });
-
+  describe("beforeGRPC()", () => {
     test("beforeGRPC registers a bus listener for call", () => {
       const app = new Sinwan();
       const handler = (): void => {
@@ -638,54 +648,7 @@ describe("Sinwan", () => {
 
   // ─── group() / mount() / static() ───────────────────────
 
-  describe("group() / mount() / static()", () => {
-    test("group() creates a route group", () => {
-      const app = new Sinwan();
-      const result = app.group("/api", (r) => {
-        r.get("/users", () => {});
-      });
-      expect(result).toBe(app);
-    });
-
-    test("group() throws for empty prefix", () => {
-      const app = new Sinwan();
-      expect(() => app.group("", () => {})).toThrow(
-        "[Sinwan.group] Prefix must be a non-empty string.",
-      );
-    });
-
-    test("group() throws for non-string prefix", () => {
-      const app = new Sinwan();
-      expect(() => app.group(123 as unknown as string, () => {})).toThrow(
-        "[Sinwan.group] Prefix must be a non-empty string.",
-      );
-    });
-
-    test("mount() mounts a router", () => {
-      const app = new Sinwan();
-      const { HTTPRouter } = require("../src/routers/http-router");
-      const router = new HTTPRouter();
-      router.get("/users", () => {});
-      const result = app.mount("/api", router);
-      expect(result).toBe(app);
-    });
-
-    test("mount() throws for empty prefix", () => {
-      const app = new Sinwan();
-      const { HTTPRouter } = require("../src/routers/http-router");
-      expect(() => app.mount("", new HTTPRouter())).toThrow(
-        "[Sinwan.mount] Prefix must be a non-empty string.",
-      );
-    });
-
-    test("mount() throws for non-string prefix", () => {
-      const app = new Sinwan();
-      const { HTTPRouter } = require("../src/routers/http-router");
-      expect(() =>
-        app.mount(123 as unknown as string, new HTTPRouter()),
-      ).toThrow("[Sinwan.mount] Prefix must be a non-empty string.");
-    });
-
+  describe("static()", () => {
     test("static() registers a static file handler", () => {
       const app = new Sinwan();
       const result = app.static("/public", "./public");
@@ -771,13 +734,15 @@ describe("Sinwan", () => {
       expect(res.status).toBe(200);
     });
 
-    test("returns 500 for unknown route (no response produced)", async () => {
+    test("returns 404 for unknown route", async () => {
       const app = new Sinwan();
       app.get("/known", () => {
         return;
       });
       const res = await app.request("/unknown");
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("Not Found");
     });
   });
 
@@ -1215,8 +1180,8 @@ describe("Sinwan", () => {
       await app.listen(3000);
       // HTTP router should be installed after listen
       const res = await app.request("http://localhost/test");
-      // No route registered, so 500 "No response was produced"
-      expect(res.status).toBe(500);
+      // No route registered, so auto 404
+      expect(res.status).toBe(404);
       await app.stop();
     });
   });
@@ -1241,8 +1206,8 @@ describe("Sinwan", () => {
     test("disabled internal assets do not intercept", async () => {
       const app = new Sinwan({ internalAssets: { enabled: false } });
       const res = await app.request("/favicon.ico");
-      // No route registered, so 500 "No response was produced"
-      expect(res.status).toBe(500);
+      // No route registered, so auto 404
+      expect(res.status).toBe(404);
     });
   });
 });

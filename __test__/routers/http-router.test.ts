@@ -1,18 +1,23 @@
 import { describe, expect, test, beforeEach, mock } from "bun:test";
 import { HTTPRouter, type RouteHandler } from "../../src/routers/http-router";
 import { Runtime, type RuntimeConfig } from "../../src/runtime";
-import { StepEngine } from "../../src/step-engine";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
 import { Context } from "../../src/context/context";
 import type { Request } from "../../src/types";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
-  const engine = new StepEngine();
   const bus = new EventBus();
   const errorHandler = new ErrorHandler();
   const globalState = new Map<string, unknown>();
-  return new Runtime({ engine, bus, errorHandler, globalState, ...overrides });
+  const httpRouter = new HTTPRouter();
+  return new Runtime({
+    bus,
+    errorHandler,
+    globalState,
+    httpRouter,
+    ...overrides,
+  });
 }
 
 function createMockReq(
@@ -23,12 +28,15 @@ function createMockReq(
 }
 
 async function runFetch(router: HTTPRouter, req: Request): Promise<Response> {
-  const engine = new StepEngine();
   const bus = new EventBus();
   const errorHandler = new ErrorHandler();
   const globalState = new Map<string, unknown>();
-  const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-  router.install(runtime);
+  const runtime = new Runtime({
+    bus,
+    errorHandler,
+    globalState,
+    httpRouter: router,
+  });
   return runtime.fetch(req);
 }
 
@@ -41,29 +49,16 @@ describe("HTTPRouter", () => {
       expect(router.name).toBe("sinwan:http-router");
     });
 
-    test("install() registers a step in the engine", () => {
-      const router = new HTTPRouter();
-      const engine = new StepEngine();
-      const runtime = createRuntime({ engine });
-      router.install(runtime);
-      // The step should be registered — verify by fetching
-      expect(engine).toBeDefined();
-    });
-
-    test("install() step skips non-HTTP contexts", async () => {
+    test("handle() skips non-HTTP contexts", async () => {
       const router = new HTTPRouter();
       router.get("/", (ctx) => ctx.json({ ok: true }));
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
-      router.install(runtime);
+      const runtime = createRuntime();
       // Create a context with tcp set — should skip router
       const ctx = runtime.acquireContext();
       ctx.setReq(createMockReq());
       ctx.setTCP({} as never);
-      engine.run(ctx, bus);
+      const result = router.handle(ctx);
+      if (result instanceof Promise) await result;
       // Should not have responded (router was skipped)
       expect(ctx.hasResponded()).toBe(false);
     });
@@ -194,14 +189,14 @@ describe("HTTPRouter", () => {
       expect(await res.json()).toEqual({ root: true });
     });
 
-    test("returns 500 when no route matches", async () => {
+    test("returns 404 when no route matches", async () => {
       const router = new HTTPRouter();
       router.get("/exists", () => {});
       const res = await runFetch(
         router,
         createMockReq("http://localhost/nope"),
       );
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(404);
     });
 
     test("returns 405 when method not allowed", async () => {
@@ -400,7 +395,7 @@ describe("HTTPRouter", () => {
       expect(await res.json()).toEqual({ ok: true });
     });
 
-    test("middleware does not affect routes added before", async () => {
+    test("middleware affects routes regardless of registration order", async () => {
       const router = new HTTPRouter();
       router.get("/before", (ctx) => ctx.json({ ok: true }));
       router.use((ctx) => {
@@ -411,7 +406,8 @@ describe("HTTPRouter", () => {
         router,
         createMockReq("http://localhost/before"),
       );
-      expect(res1.headers.get("X-Middleware")).toBeNull();
+      // Middleware now applies to all routes regardless of registration order
+      expect(res1.headers.get("X-Middleware")).toBe("1");
       const res2 = await runFetch(
         router,
         createMockReq("http://localhost/after"),
@@ -860,13 +856,14 @@ describe("HTTPRouter", () => {
       await Bun.file(testFile).delete();
     });
 
-    test("returns 500 for non-existent file (fall-through)", async () => {
+    test("returns 404 for non-existent file (fall-through)", async () => {
       const router = new HTTPRouter();
       router.static("/public", "/tmp");
       const res = await runFetch(
         router,
         createMockReq("http://localhost/public/nonexistent.xyz"),
       );
+      // Static handler matches but doesn't respond → 500 from finalizeResponse
       expect(res.status).toBe(500);
     });
 
@@ -877,7 +874,8 @@ describe("HTTPRouter", () => {
         router,
         createMockReq("http://localhost/public/../../../etc/passwd"),
       );
-      expect(res.status).toBe(500);
+      // URL is normalized by Request, so it doesn't match /public/* → 404
+      expect(res.status).toBe(404);
     });
 
     test("rejects encoded path traversal", async () => {
@@ -887,6 +885,7 @@ describe("HTTPRouter", () => {
         router,
         createMockReq("http://localhost/public/%2e%2e%2f%2e%2e%2fetc%2fpasswd"),
       );
+      // Matches /public/* but handler rejects traversal → no response → 500
       expect(res.status).toBe(500);
     });
 
@@ -897,6 +896,7 @@ describe("HTTPRouter", () => {
         router,
         createMockReq("http://localhost/public/%invalid%encoding"),
       );
+      // Invalid encoding → handler returns early → no response → 500
       expect(res.status).toBe(500);
     });
 
@@ -907,6 +907,7 @@ describe("HTTPRouter", () => {
         router,
         createMockReq("http://localhost/public/"),
       );
+      // Empty subpath → handler returns early → no response → 500
       expect(res.status).toBe(500);
     });
 

@@ -249,36 +249,10 @@ export class TCPRouter {
     const ctx = runtime.acquireContext();
     ctx.setTCP(socket);
 
-    // TCP open goes through the StepEngine pipeline (auth, middleware, etc.)
-    if (event === "tcp:open") {
-      let runResult: unknown;
-      try {
-        runResult = runtime.engine.run(ctx, runtime.bus);
-      } catch (err) {
-        void this.tcpHookError(runtime, err, ctx);
-        ctx.dispose();
-        runtime.releaseContext(ctx);
-        return;
-      }
-
-      const finalizeAndRunHook = async () => {
-        if (runResult instanceof Promise) await runResult;
-        if (ctx.isStopped()) {
-          ctx.dispose();
-          runtime.releaseContext(ctx);
-          return;
-        }
-        this.runTCPHookPostEngine(runtime, ctx, event, payload, hook, args);
-      };
-
-      finalizeAndRunHook().catch((err) => this.tcpHookError(runtime, err, ctx));
-      return;
-    }
-
-    this.runTCPHookPostEngine(runtime, ctx, event, payload, hook, args);
+    this.dispatchTCPHook(runtime, ctx, event, payload, hook, args);
   }
 
-  private runTCPHookPostEngine<A extends unknown[]>(
+  private dispatchTCPHook<A extends unknown[]>(
     runtime: Runtime,
     ctx: Context,
     event: string,

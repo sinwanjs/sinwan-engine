@@ -6,19 +6,24 @@ import {
   type TCPListenOptions,
 } from "../../src/routers/tcp-router";
 import { Runtime, type RuntimeConfig } from "../../src/runtime";
-import { StepEngine } from "../../src/step-engine";
+import { HTTPRouter } from "../../src/routers/http-router";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
 import type { Context, TCPData } from "../../src/context/context";
 import type { Socket } from "bun";
-import type { Step, StepResult } from "../../src/types";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
-  const engine = new StepEngine();
   const bus = new EventBus();
   const errorHandler = new ErrorHandler();
   const globalState = new Map<string, unknown>();
-  return new Runtime({ engine, bus, errorHandler, globalState, ...overrides });
+  const httpRouter = new HTTPRouter();
+  return new Runtime({
+    bus,
+    errorHandler,
+    globalState,
+    httpRouter,
+    ...overrides,
+  });
 }
 
 function createMockTCPSocket(
@@ -577,10 +582,10 @@ describe("TCPRouter", () => {
     });
   });
 
-  // ─── runTCPHook — tcp:open through engine ────────────────
+  // ─── runTCPHook — tcp:open dispatch ──────────────────────
 
-  describe("runTCPHook — tcp:open engine pipeline", () => {
-    test("open hook runs after engine pipeline (sync)", async () => {
+  describe("runTCPHook — tcp:open dispatch", () => {
+    test("open hook runs directly (no pipeline)", async () => {
       const router = new TCPRouter();
       let hookCalled = false;
       router.tcp("svc", {
@@ -588,11 +593,7 @@ describe("TCPRouter", () => {
           hookCalled = true;
         },
       });
-      const engine = new StepEngine();
-      const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
+      const runtime = createRuntime();
       router.listen(runtime, "svc", { port: 0 });
       const sock = createMockTCPSocket();
       capturedListenSocket!.open!(sock);
@@ -600,35 +601,29 @@ describe("TCPRouter", () => {
       expect(hookCalled).toBe(true);
     });
 
-    test("open hook runs after async engine pipeline", async () => {
+    test("open hook runs after bus listeners", async () => {
       const router = new TCPRouter();
       let hookCalled = false;
+      let listenerRan = false;
       router.tcp("svc", {
         open: () => {
           hookCalled = true;
         },
       });
-      const asyncStep: Step = {
-        name: "async-step",
-        run: async () => {
-          await new Promise((r) => setTimeout(r, 5));
-          return { type: "continue" } as StepResult;
-        },
-      };
-      const engine = new StepEngine();
-      engine.add(asyncStep);
       const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
+      bus.on("tcp:open", () => {
+        listenerRan = true;
+      });
+      const runtime = createRuntime({ bus });
       router.listen(runtime, "svc", { port: 0 });
       const sock = createMockTCPSocket();
       capturedListenSocket!.open!(sock);
       await flushPromises();
+      expect(listenerRan).toBe(true);
       expect(hookCalled).toBe(true);
     });
 
-    test("open hook is skipped when ctx.stop() in engine", async () => {
+    test("open hook is skipped when a bus listener calls ctx.stop()", async () => {
       const router = new TCPRouter();
       let hookCalled = false;
       router.tcp("svc", {
@@ -636,19 +631,11 @@ describe("TCPRouter", () => {
           hookCalled = true;
         },
       });
-      const stopStep: Step = {
-        name: "stop-step",
-        run: (ctx: Context) => {
-          ctx.stop();
-          return { type: "stop" } as StepResult;
-        },
-      };
-      const engine = new StepEngine();
-      engine.add(stopStep);
       const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
+      bus.on("tcp:open", (ctx: Context) => {
+        ctx.stop();
+      });
+      const runtime = createRuntime({ bus });
       router.listen(runtime, "svc", { port: 0 });
       const sock = createMockTCPSocket();
       capturedListenSocket!.open!(sock);
@@ -656,7 +643,7 @@ describe("TCPRouter", () => {
       expect(hookCalled).toBe(false);
     });
 
-    test("open hook error in engine pipeline is caught", async () => {
+    test("open hook is skipped when a bus listener throws", async () => {
       const router = new TCPRouter();
       let hookCalled = false;
       router.tcp("svc", {
@@ -664,22 +651,16 @@ describe("TCPRouter", () => {
           hookCalled = true;
         },
       });
-      const errorStep: Step = {
-        name: "error-step",
-        run: () => {
-          throw new Error("engine fail");
-        },
-      };
-      const engine = new StepEngine();
-      engine.add(errorStep);
       const bus = new EventBus();
-      const errorHandler = new ErrorHandler();
-      const globalState = new Map<string, unknown>();
-      const runtime = new Runtime({ engine, bus, errorHandler, globalState });
+      bus.on("tcp:open", () => {
+        throw new Error("listener fail");
+      });
+      const runtime = createRuntime({ bus });
       router.listen(runtime, "svc", { port: 0 });
       const sock = createMockTCPSocket();
       expect(() => capturedListenSocket!.open!(sock)).not.toThrow();
       await flushPromises();
+      // Listener threw before the hook ran
       expect(hookCalled).toBe(false);
     });
   });
@@ -1026,7 +1007,7 @@ describe("TCPRouter", () => {
   // ─── Async hook ──────────────────────────────────────────
 
   describe("async hooks", () => {
-    test("async open hook is awaited after engine", async () => {
+    test("async open hook is awaited", async () => {
       const router = new TCPRouter();
       let hookCompleted = false;
       router.tcp("svc", {
