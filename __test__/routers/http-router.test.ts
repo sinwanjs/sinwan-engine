@@ -395,7 +395,7 @@ describe("HTTPRouter", () => {
       expect(await res.json()).toEqual({ ok: true });
     });
 
-    test("middleware affects routes regardless of registration order", async () => {
+    test("middleware only affects routes registered after use()", async () => {
       const router = new HTTPRouter();
       router.get("/before", (ctx) => ctx.json({ ok: true }));
       router.use((ctx) => {
@@ -406,13 +406,31 @@ describe("HTTPRouter", () => {
         router,
         createMockReq("http://localhost/before"),
       );
-      // Middleware now applies to all routes regardless of registration order
-      expect(res1.headers.get("X-Middleware")).toBe("1");
+      // Middleware registered after /before does not apply to it.
+      expect(res1.headers.get("X-Middleware")).toBeNull();
       const res2 = await runFetch(
         router,
         createMockReq("http://localhost/after"),
       );
       expect(res2.headers.get("X-Middleware")).toBe("1");
+    });
+
+    test("middleware registered after a route does not run for that route", async () => {
+      const router = new HTTPRouter();
+      const calls: string[] = [];
+      router.use(() => {
+        calls.push("before");
+      });
+      router.get("/x", (ctx) => {
+        calls.push("route");
+        ctx.json({ ok: true });
+      });
+      router.use(() => {
+        calls.push("after");
+      });
+      const res = await runFetch(router, createMockReq("http://localhost/x"));
+      expect(await res.json()).toEqual({ ok: true });
+      expect(calls).toEqual(["before", "route"]);
     });
 
     test("multiple middleware execute in order", async () => {

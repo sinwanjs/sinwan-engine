@@ -2,6 +2,21 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-08-03 — Middleware Registration-Order Semantics
+
+### Changed
+
+- **`HTTPRouter` middleware** — middleware registered via `use()` now only applies to routes registered **after** the call, matching the `Sinwan.use` JSDoc. Previously, all router-level middleware was prepended to every matched route at resolve time, regardless of registration order, so middleware registered after a route still ran for it.
+
+### Fixed
+
+- **Middleware registration order** — `HTTPRouter.handle()` no longer re-concatenates `middlewares` + `match.handlers` per request. Each route now bakes the middleware snapshot into its handler chain once at `add()` time. This also corrects the mismatch between the `Sinwan.use` JSDoc ("applied to all routes registered after the call") and the actual order-independent behavior.
+- **`HTTPRouter.mount()`** — no longer double-prepends child-router middleware. Child middleware travels with the child route's `handlers` (baked at child registration), and the parent's middleware is baked at mount time, yielding `parent mw → child mw → handlers`.
+
+### Optimized
+
+- **Per-request allocation** — `handle()` no longer allocates a new `[...middlewares, ...match.handlers]` array on every request (and again in the ALL-fallback branch). The chain is built once at startup, eliminating per-request array allocation and reducing GC pressure under load.
+
 ## [1.1.0] — 2026-08-03 — Architecture Cleanup & Async Refactor
 
 ### Removed

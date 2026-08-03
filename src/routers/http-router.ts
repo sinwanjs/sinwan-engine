@@ -286,10 +286,11 @@ export class HTTPRouter {
     return this.routes;
   }
 
-  // HTTPRouter-level middleware applied to all routes at resolve time.
+  // HTTPRouter-level middleware; baked into each route's chain at registration
+  // time (registration-order semantics) rather than applied at resolve time.
   private readonly middlewares: RouteHandler[] = [];
 
-  /** Returns a copy of this router's middleware list (used by mount()). */
+  /** Returns a copy of this router's middleware list. */
   getMiddlewares(): RouteHandler[] {
     return [...this.middlewares];
   }
@@ -323,7 +324,7 @@ export class HTTPRouter {
 
   // ─── Middleware & Grouping ────────────────────────────────
 
-  /** Add HTTPRouter-level middleware. Applied to all routes at resolve time. */
+  /** Add HTTPRouter-level middleware. Baked into routes registered after this call. */
   use(...handlers: RouteHandler[]) {
     this.middlewares.push(...handlers);
   }
@@ -340,10 +341,9 @@ export class HTTPRouter {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
     const childRoutes = HTTPRouter.getRoutes();
     const childRouteCount = childRoutes.length;
-    // Prepend the child router's own middleware to each of its routes so it
-    // travels with the route when mounted into the parent. The parent's
-    // middleware is applied at resolve time in handle().
-    const childMiddleware = HTTPRouter.getMiddlewares();
+    // Each child route's handlers already carry the child router's middleware
+    // (baked in at child registration time). this.add() bakes this (parent)
+    // router's middleware at mount time, yielding parent mw -> child mw -> handlers.
     for (let routeIndex = 0; routeIndex < childRouteCount; routeIndex += 1) {
       const route = childRoutes[routeIndex];
       if (!route) continue;
@@ -351,10 +351,7 @@ export class HTTPRouter {
       let mergedPath = cleanPrefix + route.path;
       if (mergedPath === "" || mergedPath === "//") mergedPath = "/";
 
-      this.add(route.method, mergedPath, [
-        ...childMiddleware,
-        ...route.handlers,
-      ]);
+      this.add(route.method, mergedPath, route.handlers);
     }
   }
 
@@ -447,7 +444,13 @@ export class HTTPRouter {
   private add(method: HttpMethod, path: string, handlers: RouteHandler[]) {
     const normalized = normalizePath(path);
 
-    this.routes.push({ method, path: normalized, handlers });
+    // Registration-order semantics: snapshot the middleware registered so far
+    // into this route's chain, so middleware added later does not apply to
+    // routes registered earlier.
+    const mw = this.middlewares;
+    const chain = mw.length > 0 ? [...mw, ...handlers] : handlers;
+
+    this.routes.push({ method, path: normalized, handlers: chain });
 
     const hasParamsOrWildcard =
       normalized.includes(":") || normalized.includes("*");
@@ -455,11 +458,11 @@ export class HTTPRouter {
     if (method === "ALL") {
       if (!hasParamsOrWildcard) {
         const current = this.staticAll.get(normalized);
-        if (current) this.staticAll.set(normalized, [...current, ...handlers]);
-        else this.staticAll.set(normalized, handlers);
+        if (current) this.staticAll.set(normalized, [...current, ...chain]);
+        else this.staticAll.set(normalized, chain);
       } else {
         const segments = splitPath(normalized);
-        radixInsert(this.radixAll, segments, 0, "ALL", handlers);
+        radixInsert(this.radixAll, segments, 0, "ALL", chain);
       }
       return;
     }
@@ -467,13 +470,13 @@ export class HTTPRouter {
     if (!hasParamsOrWildcard) {
       const current = this.staticRoutes[method].get(normalized);
       if (current)
-        this.staticRoutes[method].set(normalized, [...current, ...handlers]);
-      else this.staticRoutes[method].set(normalized, handlers);
+        this.staticRoutes[method].set(normalized, [...current, ...chain]);
+      else this.staticRoutes[method].set(normalized, chain);
       return;
     }
 
     const segments = splitPath(normalized);
-    radixInsert(this.radix[method], segments, 0, method, handlers);
+    radixInsert(this.radix[method], segments, 0, method, chain);
   }
 
   // ─── Resolution ───────────────────────────────────────────
@@ -703,14 +706,10 @@ export class HTTPRouter {
       return;
     }
 
-    // Prepend this router's middleware at resolve time so it applies to all
-    // routes regardless of registration order.
-    const mw = this.middlewares;
-    const fullChain =
-      mw.length > 0 ? [...mw, ...match.handlers] : match.handlers;
-
+    // Middleware is baked into match.handlers at registration time
+    // (registration-order semantics), so run the chain as-is.
     ctx.params = match.params;
-    const result = HTTPRouter.runChain(ctx, fullChain, onError);
+    const result = HTTPRouter.runChain(ctx, match.handlers, onError);
 
     if (result instanceof Promise) {
       return (async () => {
@@ -720,9 +719,7 @@ export class HTTPRouter {
           const allMatch = this.resolveAll(pathname);
           if (allMatch) {
             ctx.params = allMatch.params;
-            const allChain =
-              mw.length > 0 ? [...mw, ...allMatch.handlers] : allMatch.handlers;
-            await HTTPRouter.runChain(ctx, allChain, onError);
+            await HTTPRouter.runChain(ctx, allMatch.handlers, onError);
           }
         }
       })();
@@ -735,9 +732,7 @@ export class HTTPRouter {
       if (!allMatch) return;
 
       ctx.params = allMatch.params;
-      const allChain =
-        mw.length > 0 ? [...mw, ...allMatch.handlers] : allMatch.handlers;
-      return HTTPRouter.runChain(ctx, allChain, onError);
+      return HTTPRouter.runChain(ctx, allMatch.handlers, onError);
     }
   }
 }

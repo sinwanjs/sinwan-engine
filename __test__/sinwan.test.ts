@@ -428,15 +428,15 @@ describe("Sinwan", () => {
       expect(await res.json()).toEqual({ a: 1, b: 2 });
     });
 
-    test("applies to routes registered before use() (order-independent)", async () => {
+    test("does not apply to routes registered before use()", async () => {
       const app = new Sinwan();
       app.get("/early", (ctx) => ctx.json({ ok: true }));
       app.use((ctx) => ctx.headers.set("x-mw", "1"));
       app.get("/late", (ctx) => ctx.json({ ok: true }));
       const early = await app.request("/early");
       const late = await app.request("/late");
-      // Middleware now applies to all routes regardless of registration order
-      expect(early.headers.get("x-mw")).toBe("1");
+      // Middleware registered after /early does not apply to it.
+      expect(early.headers.get("x-mw")).toBeNull();
       expect(late.headers.get("x-mw")).toBe("1");
     });
 

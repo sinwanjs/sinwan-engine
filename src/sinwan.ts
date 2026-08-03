@@ -246,9 +246,10 @@ export class Sinwan {
   /**
    * Register app-level HTTP middleware.
    *
-   * Middleware handlers run before every route's own handlers, in
-   * registration order. This is the app-level equivalent of
-   * {@link HTTPRouter.use}, applied to all routes registered after the call.
+   * Middleware handlers run before the route handlers of every route
+   * registered after this call, in registration order. Middleware registered
+   * after a route does not apply to that route. This is the app-level
+   * equivalent of {@link HTTPRouter.use}.
    *
    * ```ts
    * app
@@ -525,8 +526,9 @@ export class Sinwan {
   ): Promise<TCPSocketListener<unknown> | UnixSocketListener<unknown>> {
     this.assertInitialized("listenTCP");
     await this.transitionToReady(options.port ?? 0, "tcp");
-    return this.tcpRouter.listen(this.runtime, name, options) as TCPSocketListener<unknown> |
-      UnixSocketListener<unknown>;
+    return this.tcpRouter.listen(this.runtime, name, options) as
+      | TCPSocketListener<unknown>
+      | UnixSocketListener<unknown>;
   }
 
   connectTCP<T = unknown>(
@@ -588,7 +590,7 @@ export class Sinwan {
     await readyPromise;
     const handle = await handlePromise;
     this.lifecycle.on("shutdown", () => {
-      (handle as { stop: () => void; }).stop();
+      (handle as { stop: () => void }).stop();
     });
     return handle;
   }
