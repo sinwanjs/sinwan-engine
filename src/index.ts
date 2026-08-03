@@ -61,6 +61,16 @@ export type {
 
 export { HTTPRouter, type RouteHandler } from "./routers/http-router";
 
+// ─── Middleware ───────────────────────────────────────────
+export { cors } from "./middleware/cors";
+export type {
+  CorsOptions,
+  CorsOptionsDelegate,
+  OriginOption,
+  OriginDelegate,
+  StaticOrigin,
+} from "./middleware/cors";
+
 export { WSRouter } from "./routers/ws-router";
 export type {
   WSRouteConfig,

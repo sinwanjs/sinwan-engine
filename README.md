@@ -104,6 +104,65 @@ app.get("/risky", async (ctx) => {
 });
 ```
 
+## CORS
+
+Sinwan ships with a built-in `cors` middleware — a faithful port of the popular express `cors` package, adapted to Sinwan's `ctx`-only handler model. No external dependencies required.
+
+```ts
+import { Sinwan, cors } from "sinwan-engine";
+
+const app = await Sinwan.create();
+
+// Default: allow any origin
+app.use(cors());
+
+// Configured: allow-list, credentials, preflight cache
+app.use(
+  cors({
+    origin: ["https://app.example.com", "https://admin.example.com"],
+    credentials: true,
+    maxAge: 86400,
+  }),
+);
+
+// Dynamic origin delegate
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, false);
+      cb(null, origin.endsWith(".example.com") ? origin : false);
+    },
+  }),
+);
+```
+
+### Preflight (OPTIONS)
+
+In Sinwan, middleware is baked into specific routes at registration time. For preflight (OPTIONS) requests to be handled by the `cors` middleware, register an OPTIONS route — the middleware short-circuits it automatically with a `204` (configurable via `optionsSuccessStatus`):
+
+```ts
+// cors() handles OPTIONS automatically when an OPTIONS route exists
+app.options("/api/*", (ctx) => {}); // cors() short-circuits before this runs
+
+// Or use cors.preflight() for an explicit, always-terminating handler
+app.options("/api/*", cors.preflight({ origin: "*", maxAge: 3600 }));
+```
+
+### Options
+
+| Option                 | Type                                                        | Default                          | Description                                                    |
+| ---------------------- | ----------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- |
+| `origin`               | `boolean \| string \| string[] \| RegExp \| OriginDelegate` | `"*"`                            | Origin policy. `false` disables CORS.                          |
+| `methods`              | `string \| string[]`                                        | `GET,HEAD,PUT,PATCH,POST,DELETE` | Allowed methods (preflight `Access-Control-Allow-Methods`).    |
+| `allowedHeaders`       | `string \| string[]`                                        | _(reflect request)_              | Allowed request headers (`Access-Control-Allow-Headers`).      |
+| `exposedHeaders`       | `string \| string[]`                                        | _(none)_                         | Response headers exposed to the client.                        |
+| `credentials`          | `boolean`                                                   | `false`                          | Send `Access-Control-Allow-Credentials: true`.                 |
+| `maxAge`               | `number \| string`                                          | _(none)_                         | Preflight cache lifetime in seconds.                           |
+| `preflightContinue`    | `boolean`                                                   | `false`                          | If `true`, don't short-circuit OPTIONS — pass to next handler. |
+| `optionsSuccessStatus` | `number`                                                    | `204`                            | Status code for short-circuited preflight responses.           |
+
+See `examples/http/cors.ts` for a runnable example.
+
 ## Features
 
 - **Multi-protocol**: HTTP, WebSocket, TCP, UDP, and gRPC from one engine
@@ -112,6 +171,7 @@ app.get("/risky", async (ctx) => {
 - **Lifecycle manager**: Five-phase lifecycle (`idle → init → ready → shutdown → destroyed`)
 - **Context pooling**: Reusable per-request context with state, global state, and response helpers
 - **Response helpers**: `json`, `text`, `html`, `redirect`, `stream`, `iterate`, `sse`, `buffer`, `file`
+- **Built-in CORS**: `cors` middleware with dynamic origin, credentials, and preflight handling
 - **Plugin system**: Encapsulate features as installable plugins
 - **Module system**: Group routes into reusable modules (`createHttpModule`, `createWSModule`, …)
 - **gRPC support**: Optional — install `sinwan-grpc` to enable typed gRPC services
