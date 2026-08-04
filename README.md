@@ -12,6 +12,7 @@
           <a href="https://www.npmjs.com/package/sinwan-engine"><img src="https://img.shields.io/npm/dm/sinwan-engine?color=42b883&label=downloads&logo=npm" alt="NPM Downloads" /></a>
           <a href="./LICENSE"><img src="https://img.shields.io/npm/l/sinwan-engine?color=35495e&label=license" alt="License" /></a>
           <img src="https://img.shields.io/badge/coverage-100%25-brightgreen?logo=bun" alt="100% Test Coverage" />
+          <a href="https://deepwiki.com/sinwanjs/sinwan-engine"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
         </p>
       </td>
     </tr>
