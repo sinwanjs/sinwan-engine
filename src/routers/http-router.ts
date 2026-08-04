@@ -472,8 +472,11 @@ export class HTTPRouter {
     if (method === "ALL") {
       if (!hasParamsOrWildcard) {
         const current = this.staticAll.get(normalized);
-        if (current) this.staticAll.set(normalized, [...current, ...chain]);
-        else this.staticAll.set(normalized, chain);
+        if (current)
+          throw new Error(
+            `[sinwan] Duplicate route: ALL "${normalized}" is already registered. Use a different path or remove the duplicate registration.`,
+          );
+        this.staticAll.set(normalized, chain);
       } else {
         const segments = splitPath(normalized);
         radixInsert(this.radixAll, segments, 0, "ALL", chain);
@@ -484,8 +487,10 @@ export class HTTPRouter {
     if (!hasParamsOrWildcard) {
       const current = this.staticRoutes[method].get(normalized);
       if (current)
-        this.staticRoutes[method].set(normalized, [...current, ...chain]);
-      else this.staticRoutes[method].set(normalized, chain);
+        throw new Error(
+          `[sinwan] Duplicate route: ${method} "${normalized}" is already registered. Use a different path or remove the duplicate registration.`,
+        );
+      this.staticRoutes[method].set(normalized, chain);
       return;
     }
 
@@ -674,22 +679,40 @@ export class HTTPRouter {
           try {
             await result;
             if (ctx.isFailed()) throw ctx.failError;
-            if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly())
+            if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) {
+              if (ctx.isSkipped()) {
+                ctx.clearSkip();
+                throw new Error(
+                  "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
+                );
+              }
               return;
+            }
             if (ctx.isSkipped()) {
-              i += 1;
+              i += ctx.skipCount;
               ctx.clearSkip();
-            } // Skip next handler
+            } // Skip next N handlers
             for (let j = i + 1; j < len; j += 1) {
               const h = chain[j];
               if (h) await h(ctx);
               if (ctx.isFailed()) throw ctx.failError;
-              if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly())
+              if (
+                ctx.hasResponded() ||
+                ctx.isStopped() ||
+                ctx.isRespondEarly()
+              ) {
+                if (ctx.isSkipped()) {
+                  ctx.clearSkip();
+                  throw new Error(
+                    "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
+                  );
+                }
                 return;
+              }
               if (ctx.isSkipped()) {
-                j += 1;
+                j += ctx.skipCount;
                 ctx.clearSkip();
-              } // Skip next handler
+              } // Skip next N handlers
             }
           } catch (error) {
             if (onError) {
@@ -710,11 +733,19 @@ export class HTTPRouter {
         }
         throw ctx.failError;
       }
-      if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) return;
+      if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) {
+        if (ctx.isSkipped()) {
+          ctx.clearSkip();
+          throw new Error(
+            "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
+          );
+        }
+        return;
+      }
       if (ctx.isSkipped()) {
-        i += 1;
+        i += ctx.skipCount;
         ctx.clearSkip();
-      } // Skip next handler
+      } // Skip next N handlers
     }
   }
 

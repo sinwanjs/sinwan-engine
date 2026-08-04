@@ -135,19 +135,17 @@ export class Sinwan {
    * Install one or more plugins.
    *
    * ```ts
-   * app
-   *   .install(loggerPlugin)
-   *   .install(authPlugin, corsPlugin, rateLimitPlugin)
-   *   .install({
-   *     name: "hello",
-   *     install(rt) { rt.bus.on("init", () => console.log("Hello!")); }
-   *   });
+   * app.install(loggerPlugin);
+   * app.install(authPlugin, corsPlugin, rateLimitPlugin);
+   * app.install({
+   *   name: "hello",
+   *   install(rt) { rt.bus.on("init", () => console.log("Hello!")); }
+   * });
    * ```
    *
    * @param plugins One or more Plugin instances.
-   * @returns `this` for fluent chaining.
    */
-  install(...plugins: Plugin[]): this {
+  install(...plugins: Plugin[]): void {
     for (const plugin of plugins) {
       if (!plugin || typeof plugin !== "object") {
         throw new TypeError(
@@ -166,7 +164,6 @@ export class Sinwan {
       }
       this.runtime.use(plugin);
     }
-    return this;
   }
 
   /**
@@ -188,10 +185,8 @@ export class Sinwan {
    * const app = await Sinwan.create();
    * app.register(apiModule, sinwanGRPC);
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  register(...modules: SinwanModule[]): this {
+  register(...modules: SinwanModule[]): void {
     for (const mod of modules) {
       if (!mod || typeof mod !== "object") {
         throw new TypeError(
@@ -219,7 +214,6 @@ export class Sinwan {
         mod.register(this);
       }
     }
-    return this;
   }
 
   /**
@@ -268,9 +262,8 @@ export class Sinwan {
    * handlers (`RouteHandler`), the same type accepted by `get`/`post`/etc.
    *
    * @param handlers One or more route handlers to run for every request.
-   * @returns `this` for fluent chaining.
    */
-  use(...handlers: RouteHandler[]): this {
+  use(...handlers: RouteHandler[]): void {
     if (handlers.length === 0) {
       throw new TypeError(`[Sinwan.use] At least one handler is required.`);
     }
@@ -282,24 +275,19 @@ export class Sinwan {
       }
     }
     this.httpRouter.use(...handlers);
-    return this;
   }
 
   /**
    * Register a GET route handler.
    *
    * ```ts
-   * app
-   *   .get("/", (ctx) => ctx.json({ hello: "world" }))
-   *   .get("/users/:id", (ctx) => ctx.json({ id: ctx.params.id }));
+   * app.get("/", (ctx) => ctx.json({ hello: "world" }));
+   * app.get("/users/:id", (ctx) => ctx.json({ id: ctx.params.id }));
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  get(path: string, ...handlers: RouteHandler[]): this {
+  get(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("GET", path, handlers);
     this.httpRouter.get(path, ...handlers);
-    return this;
   }
 
   /**
@@ -311,63 +299,50 @@ export class Sinwan {
    *   ctx.json({ created: body });
    * });
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  post(path: string, ...handlers: RouteHandler[]): this {
+  post(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("POST", path, handlers);
     this.httpRouter.post(path, ...handlers);
-    return this;
   }
 
   /**
    * Register a PUT route handler.
-   * @returns `this` for fluent chaining.
    */
-  put(path: string, ...handlers: RouteHandler[]): this {
+  put(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("PUT", path, handlers);
     this.httpRouter.put(path, ...handlers);
-    return this;
   }
 
   /**
    * Register a PATCH route handler.
-   * @returns `this` for fluent chaining.
    */
-  patch(path: string, ...handlers: RouteHandler[]): this {
+  patch(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("PATCH", path, handlers);
     this.httpRouter.patch(path, ...handlers);
-    return this;
   }
 
   /**
    * Register a DELETE route handler.
-   * @returns `this` for fluent chaining.
    */
-  delete(path: string, ...handlers: RouteHandler[]): this {
+  delete(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("DELETE", path, handlers);
     this.httpRouter.delete(path, ...handlers);
-    return this;
   }
 
   /**
    * Register an OPTIONS route handler.
-   * @returns `this` for fluent chaining.
    */
-  options(path: string, ...handlers: RouteHandler[]): this {
+  options(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("OPTIONS", path, handlers);
     this.httpRouter.options(path, ...handlers);
-    return this;
   }
 
   /**
    * Register a HEAD route handler.
-   * @returns `this` for fluent chaining.
    */
-  head(path: string, ...handlers: RouteHandler[]): this {
+  head(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("HEAD", path, handlers);
     this.httpRouter.head(path, ...handlers);
-    return this;
   }
 
   /**
@@ -385,13 +360,10 @@ export class Sinwan {
    *   ctx.json({ results: await search(q, limit) });
    * });
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  query(path: string, ...handlers: RouteHandler[]): this {
+  query(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("QUERY", path, handlers);
     this.httpRouter.query(path, ...handlers);
-    return this;
   }
 
   /**
@@ -400,13 +372,10 @@ export class Sinwan {
    * ```ts
    * app.all("/health", (ctx) => ctx.json({ status: "ok" }));
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  all(path: string, ...handlers: RouteHandler[]): this {
+  all(path: string, ...handlers: RouteHandler[]): void {
     this.validateRoute("ALL", path, handlers);
     this.httpRouter.all(path, ...handlers);
-    return this;
   }
 
   /**
@@ -422,39 +391,32 @@ export class Sinwan {
    *   close(ws) { ws.unsubscribe("room:1"); },
    * });
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  ws(path: string, config: WSRouteConfig): this {
+  ws(path: string, config: WSRouteConfig): void {
     if (!path || typeof path !== "string") {
       throw new TypeError(`[Sinwan.ws] Path must be a non-empty string.`);
     }
     this.wsRouter.ws(path, config);
-    return this;
   }
 
   /**
    * Register a TCP route.
-   * @returns `this` for fluent chaining.
    */
-  tcp(name: string, config: TCPRouteConfig): this {
+  tcp(name: string, config: TCPRouteConfig): void {
     if (!name || typeof name !== "string") {
       throw new TypeError(`[Sinwan.tcp] Name must be a non-empty string.`);
     }
     this.tcpRouter.tcp(name, config);
-    return this;
   }
 
   /**
    * Register a UDP route.
-   * @returns `this` for fluent chaining.
    */
-  udp(name: string, config: UDPRouteConfig): this {
+  udp(name: string, config: UDPRouteConfig): void {
     if (!name || typeof name !== "string") {
       throw new TypeError(`[Sinwan.udp] Name must be a non-empty string.`);
     }
     this.udpRouter.udp(name, config);
-    return this;
   }
 
   /**
@@ -475,16 +437,13 @@ export class Sinwan {
    *
    * await app.listenGRPC({ port: 50051 });
    * ```
-   *
-   * @returns `this` for fluent chaining.
    */
-  grpc(name: string, config: never): this;
-  grpc(name: string, config: unknown): this {
+  grpc(name: string, config: never): void;
+  grpc(name: string, config: unknown): void {
     if (!name || typeof name !== "string") {
       throw new TypeError(`[Sinwan.grpc] Name must be a non-empty string.`);
     }
     getGRPCProvider().registerService(name, config);
-    return this;
   }
 
   /**
@@ -534,9 +493,8 @@ export class Sinwan {
    *
    * @param prefix The URL prefix (e.g. "/public")
    * @param root   The local directory path (e.g. "./public")
-   * @returns `this` for fluent chaining.
    */
-  static(prefix: string, root: string): this {
+  static(prefix: string, root: string): void {
     if (!prefix || typeof prefix !== "string") {
       throw new TypeError(`[Sinwan.static] Prefix must be a non-empty string.`);
     }
@@ -544,7 +502,6 @@ export class Sinwan {
       throw new TypeError(`[Sinwan.static] Root must be a non-empty string.`);
     }
     this.httpRouter.static(prefix, root);
-    return this;
   }
 
   async listenTCP<T = unknown>(

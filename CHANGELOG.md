@@ -2,6 +2,22 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-08-04 — Breaking API Cleanup & Control-Flow Fixes
+
+### Breaking Changes
+
+- **`Sinwan` methods no longer return `this`** — `use()`, `get()`, `post()`, `put()`, `patch()`, `delete()`, `options()`, `head()`, `query()`, `all()`, `ws()`, `tcp()`, `udp()`, `grpc()`, `static()`, `install()`, and `register()` now return `void`. This prevents the `.get().use()` footgun at the type level (TypeScript compile error). **Migration:** replace `app.get("/a", h1).get("/b", h2)` and `app.install(p).register(m)` with standalone statements.
+- **`ctx.continue()` removed** — `continue()` was an HTTP `100 Continue` response helper, NOT flow control. The name was a trap for Express/Koa users. Calling `ctx.continue()` now **throws**. **Migration:** replace `ctx.continue()` with `ctx.respondContinue()`.
+- **`ctx.skip()` after response throws** — calling `skip()` when the chain has already halted (`ctx.json()`, `ctx.stop()`, `ctx.respond()`) now **throws** instead of being silently ignored.
+- **Duplicate route registration throws** — registering the same `method + path` twice now **throws** instead of silently concatenating handlers.
+
+### Added
+
+- **`ctx.skip(count)` overload** — `skip()` now accepts an optional `count` parameter to skip multiple handlers: `ctx.skip(2)` skips the next 2 handlers. Default is `1` (backward-compatible). Calling `skip()` multiple times overwrites the count (last call wins).
+- **`ctx.skipCount` getter** — returns the number of handlers to skip.
+- **`ctx.respondContinue()`** — replaces the removed `ctx.continue()`. Sets an HTTP `100 Continue` response.
+- **JSDoc warning on `HTTPRouterFluent.use()`** — clarifies that `use()` applies to subsequent routes only (registration-order semantics), not to a preceding route.
+
 ## [1.2.1] — 2026-08-04 — HTTP `QUERY` Method Support
 
 ### Added

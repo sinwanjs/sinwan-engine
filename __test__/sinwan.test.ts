@@ -146,7 +146,7 @@ describe("Sinwan", () => {
         install: mock(() => {}),
       };
       const result = app.install(plugin);
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
       expect(plugin.install).toHaveBeenCalled();
     });
 
@@ -196,10 +196,10 @@ describe("Sinwan", () => {
       );
     });
 
-    test("returns this for chaining", () => {
+    test("install returns void", () => {
       const app = new Sinwan();
       const plugin: Plugin = { name: "p", install: () => {} };
-      expect(app.install(plugin)).toBe(app);
+      expect(app.install(plugin)).toBeUndefined();
     });
   });
 
@@ -213,7 +213,7 @@ describe("Sinwan", () => {
         register: mock(() => {}),
       };
       const result = app.register(mod);
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
       expect(mod.register).toHaveBeenCalledWith(app);
     });
 
@@ -270,47 +270,47 @@ describe("Sinwan", () => {
     test("get() registers a GET route", () => {
       const app = new Sinwan();
       const result = app.get("/test", () => {});
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
     });
 
     test("post() registers a POST route", () => {
       const app = new Sinwan();
-      expect(app.post("/test", () => {})).toBe(app);
+      expect(app.post("/test", () => {})).toBeUndefined();
     });
 
     test("put() registers a PUT route", () => {
       const app = new Sinwan();
-      expect(app.put("/test", () => {})).toBe(app);
+      expect(app.put("/test", () => {})).toBeUndefined();
     });
 
     test("patch() registers a PATCH route", () => {
       const app = new Sinwan();
-      expect(app.patch("/test", () => {})).toBe(app);
+      expect(app.patch("/test", () => {})).toBeUndefined();
     });
 
     test("delete() registers a DELETE route", () => {
       const app = new Sinwan();
-      expect(app.delete("/test", () => {})).toBe(app);
+      expect(app.delete("/test", () => {})).toBeUndefined();
     });
 
     test("options() registers an OPTIONS route", () => {
       const app = new Sinwan();
-      expect(app.options("/test", () => {})).toBe(app);
+      expect(app.options("/test", () => {})).toBeUndefined();
     });
 
     test("head() registers a HEAD route", () => {
       const app = new Sinwan();
-      expect(app.head("/test", () => {})).toBe(app);
+      expect(app.head("/test", () => {})).toBeUndefined();
     });
 
     test("query() registers a QUERY route", () => {
       const app = new Sinwan();
-      expect(app.query("/test", () => {})).toBe(app);
+      expect(app.query("/test", () => {})).toBeUndefined();
     });
 
     test("all() registers a catch-all route", () => {
       const app = new Sinwan();
-      expect(app.all("/test", () => {})).toBe(app);
+      expect(app.all("/test", () => {})).toBeUndefined();
     });
 
     test("throws for empty path", () => {
@@ -366,17 +366,17 @@ describe("Sinwan", () => {
             return;
           },
         ),
-      ).toBe(app);
+      ).toBeUndefined();
     });
   });
 
   // ─── use() ───────────────────────────────────────────────
 
   describe("use()", () => {
-    test("registers middleware and returns this for chaining", () => {
+    test("registers middleware", () => {
       const app = new Sinwan();
       const result = app.use(() => {});
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
     });
 
     test("supports multiple handlers", () => {
@@ -390,7 +390,7 @@ describe("Sinwan", () => {
             return;
           },
         ),
-      ).toBe(app);
+      ).toBeUndefined();
     });
 
     test("runs middleware before route handlers", async () => {
@@ -478,7 +478,7 @@ describe("Sinwan", () => {
     test("registers a WebSocket route", () => {
       const app = new Sinwan();
       const result = app.ws("/chat", { open: () => {} });
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
     });
 
     test("throws for empty path", () => {
@@ -502,7 +502,7 @@ describe("Sinwan", () => {
     test("registers a TCP route", () => {
       const app = new Sinwan();
       const result = app.tcp("my-tcp", { open: () => {} });
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
     });
 
     test("throws for empty name", () => {
@@ -526,7 +526,7 @@ describe("Sinwan", () => {
     test("registers a UDP route", () => {
       const app = new Sinwan();
       const result = app.udp("my-udp", { open: () => {} });
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
     });
 
     test("throws for empty name", () => {
@@ -557,7 +557,7 @@ describe("Sinwan", () => {
     test("registers a gRPC service", () => {
       const app = new Sinwan();
       const result = app.grpc("greeter", { proto: "test.proto" } as never);
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
       expect(mockProvider.registerService).toHaveBeenCalledWith("greeter", {
         proto: "test.proto",
       });
@@ -584,7 +584,7 @@ describe("Sinwan", () => {
     test("static() registers a static file handler", () => {
       const app = new Sinwan();
       const result = app.static("/public", "./public");
-      expect(result).toBe(app);
+      expect(result).toBeUndefined();
     });
 
     test("static() throws for empty prefix", () => {
@@ -1169,6 +1169,126 @@ describe("Sinwan", () => {
       const res = await app.request("/favicon.ico");
       // No route registered, so auto 404
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ─── v2.0.0: void return on route methods ──────────────────
+
+  describe("v2.0.0 route methods return void", () => {
+    test("get() returns undefined (not this)", () => {
+      const app = new Sinwan();
+      const result = app.get("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("post() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.post("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("use() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.use((ctx) => {
+        ctx.setHeader("X-Test", "1");
+      });
+      expect(result).toBeUndefined();
+    });
+
+    test("all() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.all("/*", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("delete() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.delete("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("put() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.put("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("patch() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.patch("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("options() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.options("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("head() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.head("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("query() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.query("/test", (ctx) => ctx.json({ ok: true }));
+      expect(result).toBeUndefined();
+    });
+
+    test("ws() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.ws("/ws", {
+        open() {},
+      });
+      expect(result).toBeUndefined();
+    });
+
+    test("static() returns undefined", () => {
+      const app = new Sinwan();
+      const result = app.static("/public", "./public");
+      expect(result).toBeUndefined();
+    });
+  });
+
+  // ─── v2.0.0: install() and register() return void ─────────
+
+  describe("v2.0.0 install() and register() return void", () => {
+    test("install() returns undefined", () => {
+      const app = new Sinwan();
+      const plugin: Plugin = {
+        name: "test-plugin",
+        install() {},
+      };
+      const result = app.install(plugin);
+      expect(result).toBeUndefined();
+    });
+
+    test("register() returns undefined", () => {
+      const app = new Sinwan();
+      const mod: SinwanModule = {
+        name: "test-module",
+        register() {},
+      };
+      const result = app.register(mod);
+      expect(result).toBeUndefined();
+    });
+
+    test("install() and register() work as standalone statements", () => {
+      const app = new Sinwan();
+      const plugin: Plugin = {
+        name: "test-plugin",
+        install() {},
+      };
+      const mod: SinwanModule = {
+        name: "test-module",
+        register() {},
+      };
+      // These should compile and work as standalone statements
+      app.install(plugin);
+      app.register(mod);
+      // No assertion needed — if it compiles and doesn't throw, it works
     });
   });
 });

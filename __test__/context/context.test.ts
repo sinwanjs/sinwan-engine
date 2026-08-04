@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, mock, spyOn } from "bun:test";
 import {
   Context,
   type ContextOptions,
@@ -467,7 +467,7 @@ describe("Context", () => {
 
   describe("status helpers", () => {
     const successCases: Array<[string, number, keyof Context, "message"]> = [
-      ["continue", 100, "continue", "message"],
+      ["respondContinue", 100, "respondContinue", "message"],
       ["switchingProtocols", 101, "switchingProtocols", "message"],
       ["processing", 102, "processing", "message"],
       ["earlyHints", 103, "earlyHints", "message"],
@@ -771,10 +771,58 @@ describe("Context", () => {
       expect(ctx.isSkipped()).toBe(true);
     });
 
+    test("skip() default count is 1", () => {
+      ctx.skip();
+      expect(ctx.skipCount).toBe(1);
+    });
+
+    test("skip(n) sets skipCount", () => {
+      ctx.skip(3);
+      expect(ctx.isSkipped()).toBe(true);
+      expect(ctx.skipCount).toBe(3);
+    });
+
+    test("skip(0) is a no-op", () => {
+      ctx.skip(0);
+      expect(ctx.isSkipped()).toBe(false);
+      expect(ctx.skipCount).toBe(0);
+    });
+
+    test("skip(-1) is a no-op", () => {
+      ctx.skip(-1);
+      expect(ctx.isSkipped()).toBe(false);
+      expect(ctx.skipCount).toBe(0);
+    });
+
+    test("skip() called twice overwrites count (last wins)", () => {
+      ctx.skip(2);
+      ctx.skip(5);
+      expect(ctx.skipCount).toBe(5);
+    });
+
     test("clearSkip()", () => {
       ctx.skip();
       ctx.clearSkip();
       expect(ctx.isSkipped()).toBe(false);
+    });
+
+    test("clearSkip() resets skipCount to 0", () => {
+      ctx.skip(3);
+      ctx.clearSkip();
+      expect(ctx.skipCount).toBe(0);
+    });
+
+    test("respondContinue() sets 100 status", () => {
+      ctx.respondContinue();
+      expect(ctx.hasResponded()).toBe(true);
+      expect(ctx.statusCode).toBe(100);
+      expect(ctx.body).toEqual({ message: "Continue" });
+    });
+
+    test("respondContinue() with custom message", () => {
+      ctx.respondContinue("Custom");
+      expect(ctx.statusCode).toBe(100);
+      expect(ctx.body).toEqual({ message: "Custom" });
     });
 
     test("respond() and isRespondEarly()", () => {

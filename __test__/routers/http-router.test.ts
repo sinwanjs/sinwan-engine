@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { describe, expect, test, beforeEach, mock, spyOn } from "bun:test";
 import { HTTPRouter, type RouteHandler } from "../../src/routers/http-router";
 import { Runtime, type RuntimeConfig } from "../../src/runtime";
 import { EventBus } from "../../src/event-bus";
@@ -221,20 +221,16 @@ describe("HTTPRouter", () => {
       expect(res.status).toBe(405);
     });
 
-    test("appends handlers for same route and method", async () => {
+    test("duplicate same route and method throws", () => {
       const router = new HTTPRouter();
       router.get("/chain", (ctx) => {
         ctx.setHeader("X-First", "1");
       });
-      router.get("/chain", (ctx) => {
-        ctx.json({ second: true });
-      });
-      const res = await runFetch(
-        router,
-        createMockReq("http://localhost/chain"),
-      );
-      expect(res.headers.get("X-First")).toBe("1");
-      expect(await res.json()).toEqual({ second: true });
+      expect(() =>
+        router.get("/chain", (ctx) => {
+          ctx.json({ second: true });
+        }),
+      ).toThrow('[sinwan] Duplicate route: GET "/chain"');
     });
   });
 
@@ -1126,6 +1122,167 @@ describe("HTTPRouter", () => {
       );
       expect(res.headers.get("X-Async")).toBe("1");
       expect(await res.json()).toEqual({ all: true });
+    });
+  });
+
+  // ─── skip(n) multi-handler skip ────────────────────────────
+
+  describe("skip(n) multi-handler skip", () => {
+    test("skip(2) skips exactly 2 handlers", async () => {
+      const router = new HTTPRouter();
+      router.get(
+        "/skip2",
+        (ctx) => {
+          ctx.setHeader("X-1", "1");
+          ctx.skip(2);
+        },
+        (ctx) => {
+          ctx.setHeader("X-2", "2");
+        }, // should be skipped
+        (ctx) => {
+          ctx.setHeader("X-3", "3");
+        }, // should be skipped
+        (ctx) => {
+          ctx.json({ fourth: true });
+        },
+      );
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/skip2"),
+      );
+      expect(res.headers.get("X-1")).toBe("1");
+      expect(res.headers.get("X-2")).toBeNull();
+      expect(res.headers.get("X-3")).toBeNull();
+      expect(await res.json()).toEqual({ fourth: true });
+    });
+
+    test("skip(3) with only 2 handlers remaining — chain ends gracefully", async () => {
+      const router = new HTTPRouter();
+      router.get(
+        "/skip-overflow",
+        (ctx) => {
+          ctx.setHeader("X-1", "1");
+          ctx.skip(3);
+        },
+        (ctx) => {
+          ctx.setHeader("X-2", "2");
+        }, // should be skipped
+        (ctx) => {
+          ctx.setHeader("X-3", "3");
+        }, // should be skipped
+        // no 4th handler — chain should end, no response set → 500
+      );
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/skip-overflow"),
+      );
+      expect(res.headers.get("X-1")).toBe("1");
+      expect(res.headers.get("X-2")).toBeNull();
+      expect(res.headers.get("X-3")).toBeNull();
+      // No handler responded → runtime finalizes with 500
+      expect(res.status).toBe(500);
+    });
+
+    test("async handler skip(2) skips 2 handlers correctly", async () => {
+      const router = new HTTPRouter();
+      router.get(
+        "/async-skip2",
+        async (ctx) => {
+          await new Promise((r) => setTimeout(r, 1));
+          ctx.setHeader("X-1", "1");
+          ctx.skip(2);
+        },
+        (ctx) => {
+          ctx.setHeader("X-2", "2");
+        }, // should be skipped
+        (ctx) => {
+          ctx.setHeader("X-3", "3");
+        }, // should be skipped
+        (ctx) => ctx.json({ fourth: true }),
+      );
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/async-skip2"),
+      );
+      expect(res.headers.get("X-1")).toBe("1");
+      expect(res.headers.get("X-2")).toBeNull();
+      expect(res.headers.get("X-3")).toBeNull();
+      expect(await res.json()).toEqual({ fourth: true });
+    });
+  });
+
+  // ─── Ignored skip() throws ────────────────────────────────
+
+  describe("ignored skip() throws", () => {
+    test("skip() after ctx.json() throws (response already committed)", async () => {
+      const router = new HTTPRouter();
+      router.get(
+        "/skip-after-respond",
+        (ctx) => {
+          ctx.json({ ok: true });
+          ctx.skip(); // should throw
+        },
+        (ctx) => {
+          ctx.setHeader("X-Should-Not-Run", "1");
+        },
+      );
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/skip-after-respond"),
+      );
+      // ctx.json() already committed the response (200), so the throw
+      // is caught by the error handler but doesn't override the response.
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(res.headers.get("X-Should-Not-Run")).toBeNull();
+    });
+
+    test("skip() after ctx.stop() throws (no response → 500)", async () => {
+      const router = new HTTPRouter();
+      router.get(
+        "/skip-after-stop",
+        (ctx) => {
+          ctx.stop();
+          ctx.skip(); // should throw
+        },
+        (ctx) => {
+          ctx.setHeader("X-Should-Not-Run", "1");
+        },
+      );
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/skip-after-stop"),
+      );
+      // ctx.stop() halted the chain but no response was set → 500
+      expect(res.status).toBe(500);
+    });
+  });
+
+  // ─── Duplicate route registration throws ───────────────────
+
+  describe("duplicate route registration throws", () => {
+    test("duplicate GET same path throws", () => {
+      const router = new HTTPRouter();
+      router.get("/dup", (ctx) => ctx.json({ first: true }));
+      expect(() =>
+        router.get("/dup", (ctx) => ctx.json({ second: true })),
+      ).toThrow('[sinwan] Duplicate route: GET "/dup"');
+    });
+
+    test("duplicate ALL same path throws", () => {
+      const router = new HTTPRouter();
+      router.all("/dup-all", (ctx) => ctx.json({ first: true }));
+      expect(() =>
+        router.all("/dup-all", (ctx) => ctx.json({ second: true })),
+      ).toThrow('[sinwan] Duplicate route: ALL "/dup-all"');
+    });
+
+    test("different paths do NOT throw", () => {
+      const router = new HTTPRouter();
+      router.get("/a", (ctx) => ctx.json({ a: true }));
+      expect(() =>
+        router.get("/b", (ctx) => ctx.json({ b: true })),
+      ).not.toThrow();
     });
   });
 });

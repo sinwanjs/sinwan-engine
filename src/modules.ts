@@ -10,7 +10,8 @@
  * const apiModule = createHttpModule({
  *   prefix: "/api/v1",
  *   routes: (app) => {
- *     app.get("/users", listUsers).post("/users", createUser);
+ *     app.get("/users", listUsers);
+ *     app.post("/users", createUser);
  *   },
  * });
  *
@@ -83,36 +84,42 @@ export interface HTTPModule extends SinwanModule {
 }
 
 /**
- * Fluent wrapper around HTTPRouter for module chaining.
- * Methods return `this` instead of `void`.
+ * Wrapper around HTTPRouter for module route registration.
+ * Methods return `void`.
  */
 export interface HTTPRouterFluent {
   /** Get request handler */
-  get(path: string, ...handlers: RouteHandler[]): this;
+  get(path: string, ...handlers: RouteHandler[]): void;
   /** Post request handler */
-  post(path: string, ...handlers: RouteHandler[]): this;
+  post(path: string, ...handlers: RouteHandler[]): void;
   /** Put request handler */
-  put(path: string, ...handlers: RouteHandler[]): this;
+  put(path: string, ...handlers: RouteHandler[]): void;
   /** Patch request handler */
-  patch(path: string, ...handlers: RouteHandler[]): this;
+  patch(path: string, ...handlers: RouteHandler[]): void;
   /** Delete request handler */
-  delete(path: string, ...handlers: RouteHandler[]): this;
+  delete(path: string, ...handlers: RouteHandler[]): void;
   /** Options request handler */
-  options(path: string, ...handlers: RouteHandler[]): this;
+  options(path: string, ...handlers: RouteHandler[]): void;
   /** Head request handler */
-  head(path: string, ...handlers: RouteHandler[]): this;
+  head(path: string, ...handlers: RouteHandler[]): void;
   /** Query request handler (HTTP QUERY method, safe + body-carrying) */
-  query(path: string, ...handlers: RouteHandler[]): this;
+  query(path: string, ...handlers: RouteHandler[]): void;
   /** All request handler */
-  all(path: string, ...handlers: RouteHandler[]): this;
-  /** Use middleware */
-  use(...handlers: RouteHandler[]): this;
+  all(path: string, ...handlers: RouteHandler[]): void;
+  /** Use middleware.
+   *
+   * **Important:** Middleware registered via `use()` is baked into routes
+   * registered AFTER this call (registration-order semantics). It does NOT
+   * attach to a preceding route. To attach middleware to a specific route,
+   * pass it as an extra handler: `router.get(path, mw, handler)`.
+   */
+  use(...handlers: RouteHandler[]): void;
   /** Create a sub-group with its own prefix. Receives a fluent router. */
-  group(prefix: string, callback: (router: HTTPRouterFluent) => void): this;
+  group(prefix: string, callback: (router: HTTPRouterFluent) => void): void;
   /** Mount another HTTPRouter under a prefix. */
-  mount(prefix: string, httpRouter: HTTPRouter): this;
+  mount(prefix: string, httpRouter: HTTPRouter): void;
   /** Serve static files from a directory. */
-  static(prefix: string, root: string): this;
+  static(prefix: string, root: string): void;
 }
 
 function createFluentRouter(router: HTTPRouter): HTTPRouterFluent {
@@ -133,12 +140,10 @@ function createFluentRouter(router: HTTPRouter): HTTPRouterFluent {
     if (method === "use") {
       fluent[method] = (...handlers: RouteHandler[]) => {
         router.use(...handlers);
-        return fluent;
       };
     } else {
       fluent[method] = (path: string, ...handlers: RouteHandler[]) => {
         router[method](path, ...handlers);
-        return fluent;
       };
     }
   }
@@ -148,17 +153,14 @@ function createFluentRouter(router: HTTPRouter): HTTPRouterFluent {
     router.group(prefix, (childRouter) => {
       callback(createFluentRouter(childRouter));
     });
-    return fluent;
   };
 
   fluent.mount = (prefix: string, httpRouter: HTTPRouter) => {
     router.mount(prefix, httpRouter);
-    return fluent;
   };
 
   fluent.static = (prefix: string, root: string) => {
     router.static(prefix, root);
-    return fluent;
   };
 
   return fluent;

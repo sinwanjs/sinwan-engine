@@ -218,75 +218,75 @@ describe("modules", () => {
   // ─── HTTPRouterFluent ────────────────────────────────────
 
   describe("HTTPRouterFluent", () => {
-    test("get returns fluent router for chaining", () => {
+    test("get returns void", () => {
       const router = new HTTPRouter();
       const fluent = createHttpModule({
         prefix: "/test",
         routes: (r) => {
           const result = r.get("/foo", noopHandler);
-          expect(result).toBe(r);
+          expect(result).toBeUndefined();
         },
       });
       // Just verify it doesn't throw
       expect(fluent).toBeDefined();
     });
 
-    test("all HTTP methods return this for chaining", () => {
+    test("all HTTP methods return void", () => {
       const mod = createHttpModule({
         prefix: "/test",
         routes: (r) => {
-          expect(r.get("/g", noopHandler)).toBe(r);
-          expect(r.post("/p", noopHandler)).toBe(r);
-          expect(r.put("/pu", noopHandler)).toBe(r);
-          expect(r.patch("/pa", noopHandler)).toBe(r);
-          expect(r.delete("/d", noopHandler)).toBe(r);
-          expect(r.options("/o", noopHandler)).toBe(r);
-          expect(r.head("/h", noopHandler)).toBe(r);
-          expect(r.all("/a", noopHandler)).toBe(r);
+          expect(r.get("/g", noopHandler)).toBeUndefined();
+          expect(r.post("/p", noopHandler)).toBeUndefined();
+          expect(r.put("/pu", noopHandler)).toBeUndefined();
+          expect(r.patch("/pa", noopHandler)).toBeUndefined();
+          expect(r.delete("/d", noopHandler)).toBeUndefined();
+          expect(r.options("/o", noopHandler)).toBeUndefined();
+          expect(r.head("/h", noopHandler)).toBeUndefined();
+          expect(r.all("/a", noopHandler)).toBeUndefined();
         },
       });
       expect(mod).toBeDefined();
     });
 
-    test("use returns this for chaining", () => {
+    test("use returns void", () => {
       const mod = createHttpModule({
         prefix: "/test",
         routes: (r) => {
-          expect(r.use(noopHandler)).toBe(r);
+          expect(r.use(noopHandler)).toBeUndefined();
         },
       });
       expect(mod).toBeDefined();
     });
 
-    test("group returns this for chaining", () => {
+    test("group returns void", () => {
       const mod = createHttpModule({
         prefix: "/test",
         routes: (r) => {
           const result = r.group("/sub", (child) => {
             child.get("/foo", noopHandler);
           });
-          expect(result).toBe(r);
+          expect(result).toBeUndefined();
         },
       });
       expect(mod).toBeDefined();
     });
 
-    test("mount returns this for chaining", () => {
+    test("mount returns void", () => {
       const otherRouter = new HTTPRouter();
       const mod = createHttpModule({
         prefix: "/test",
         routes: (r) => {
-          expect(r.mount("/mounted", otherRouter)).toBe(r);
+          expect(r.mount("/mounted", otherRouter)).toBeUndefined();
         },
       });
       expect(mod).toBeDefined();
     });
 
-    test("static returns this for chaining", () => {
+    test("static returns void", () => {
       const mod = createHttpModule({
         prefix: "/test",
         routes: (r) => {
-          expect(r.static("/public", "./public")).toBe(r);
+          expect(r.static("/public", "./public")).toBeUndefined();
         },
       });
       expect(mod).toBeDefined();

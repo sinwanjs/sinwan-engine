@@ -183,6 +183,7 @@ export class Context {
   private static readonly RESPOND_EARLY = 1 << 5;
   private static readonly FAILED = 1 << 6;
   private _failError: unknown = null;
+  private _skipCount: number = 0;
 
   private _parsedBody: unknown = undefined;
   private _formData?: Awaited<ReturnType<Request["formData"]>>;
@@ -262,6 +263,7 @@ export class Context {
     this._requestId = options.requestId || "";
     this._status = 0;
     this._failError = null;
+    this._skipCount = 0;
     this._parsedBody = undefined;
     this._formData = undefined;
     this._bus = options.bus;
@@ -623,9 +625,15 @@ export class Context {
 
   /**
    * Respond with a 100 Continue status.
+   *
+   * **This is NOT flow control.** It sets an HTTP `100 Continue` informational
+   * response on the context (which halts the chain). If you are looking for a
+   * "call next middleware" function, Sinwan does not have one — the engine
+   * advances the chain automatically after each handler returns.
+   *
    * @param message Optional custom message (default: "Continue").
    */
-  continue(message: string = "Continue"): void {
+  respondContinue(message: string = "Continue"): void {
     this.json({ message }, 100);
   }
 
@@ -1953,9 +1961,26 @@ export class Context {
     return (this._status & Context.STREAMING) !== 0;
   }
 
-  /** Signal that the next step should be skipped. */
-  skip(): void {
+  /**
+   * Signal that the next `count` steps should be skipped.
+   *
+   * The skip is consumed by `runChain` (which advances the chain index by
+   * `count` and then clears the flag). Calling `skip()` multiple times
+   * overwrites the previous count (last call wins), matching the idempotent
+   * behavior of the underlying bitmask.
+   *
+   * **Note:** if a response has already been set (`ctx.json()`, `ctx.text()`,
+   * etc.) or the chain has been halted (`ctx.stop()`, `ctx.respond()`), the
+   * `runChain` runner checks those flags BEFORE `isSkipped()` and returns
+   * early — so `skip()` will have no effect in that case. A dev-mode warning
+   * is emitted when this happens.
+   *
+   * @param count Number of handlers to skip (default: 1). Values < 1 are no-ops.
+   */
+  skip(count: number = 1): void {
+    if (count < 1) return;
     this._status |= Context.SKIPPED;
+    this._skipCount = count;
   }
 
   /** Whether skip() has been called. */
@@ -1963,9 +1988,15 @@ export class Context {
     return (this._status & Context.SKIPPED) !== 0;
   }
 
+  /** The number of handlers to skip. Reset to 0 by clearSkip(). */
+  get skipCount(): number {
+    return this._skipCount;
+  }
+
   /** Clear the skip flag — used by runChain to prevent skip from propagating past the current chain. */
   clearSkip(): void {
     this._status &= ~Context.SKIPPED;
+    this._skipCount = 0;
   }
 
   /** Signal an early response — halts the pipeline without setting a response body. */

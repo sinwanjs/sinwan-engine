@@ -37,16 +37,18 @@ import { Sinwan } from "sinwan-engine";
 
 const app = await Sinwan.create();
 
-app
-  .use((ctx) => {
-    console.log(`[HTTP] ${ctx.req.method} ${ctx.req.url}`);
-  })
-  .get("/", (ctx) => ctx.json({ hello: "world" }))
-  .get("/users/:id", (ctx) => ctx.json({ id: ctx.params.id }))
-  .post("/users", async (ctx) => {
-    const body = await ctx.parseBody();
-    ctx.json({ created: body }, 201);
-  });
+app.use((ctx) => {
+  console.log(`[HTTP] ${ctx.req.method} ${ctx.req.url}`);
+});
+
+app.get("/", (ctx) => ctx.json({ hello: "world" }));
+
+app.get("/users/:id", (ctx) => ctx.json({ id: ctx.params.id }));
+
+app.post("/users", async (ctx) => {
+  const body = await ctx.parseBody();
+  ctx.json({ created: body }, 201);
+});
 
 await app.listen(3000, ({ port }) => {
   console.log(`Server live on http://localhost:${port}`);
