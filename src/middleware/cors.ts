@@ -86,7 +86,7 @@ export interface CorsOptions {
    * Accepts a static spec or an async {@link OriginDelegate}.
    */
   origin?: OriginOption;
-  /** Allowed HTTP methods. Defaults to `GET,HEAD,PUT,PATCH,POST,DELETE`. */
+  /** Allowed HTTP methods. Defaults to `GET,HEAD,PUT,PATCH,POST,DELETE,QUERY`. */
   methods?: string | string[];
   /**
    * Allowed request headers. When omitted, the preflight response reflects
@@ -134,7 +134,7 @@ const DEFAULT_CORS_OPTIONS: Readonly<
     >
   >
 > = {
-  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE,QUERY",
   preflightContinue: false,
   optionsSuccessStatus: 204,
 };

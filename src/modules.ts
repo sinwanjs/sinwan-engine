@@ -101,6 +101,8 @@ export interface HTTPRouterFluent {
   options(path: string, ...handlers: RouteHandler[]): this;
   /** Head request handler */
   head(path: string, ...handlers: RouteHandler[]): this;
+  /** Query request handler (HTTP QUERY method, safe + body-carrying) */
+  query(path: string, ...handlers: RouteHandler[]): this;
   /** All request handler */
   all(path: string, ...handlers: RouteHandler[]): this;
   /** Use middleware */
@@ -123,6 +125,7 @@ function createFluentRouter(router: HTTPRouter): HTTPRouterFluent {
     "delete",
     "options",
     "head",
+    "query",
     "all",
     "use",
   ] as const;

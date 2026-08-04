@@ -11,6 +11,7 @@
           <a href="https://github.com/sinwanjs/sinwan-engine/stargazers"><img src="https://img.shields.io/github/stars/sinwanjs/sinwan-engine.svg?color=ffce3b&label=stars&logo=github" alt="GitHub stars" /></a>
           <a href="https://www.npmjs.com/package/sinwan-engine"><img src="https://img.shields.io/npm/dm/sinwan-engine?color=42b883&label=downloads&logo=npm" alt="NPM Downloads" /></a>
           <a href="./LICENSE"><img src="https://img.shields.io/npm/l/sinwan-engine?color=35495e&label=license" alt="License" /></a>
+          <img src="https://img.shields.io/badge/coverage-100%25-brightgreen?logo=bun" alt="100% Test Coverage" />
         </p>
       </td>
     </tr>
@@ -150,22 +151,49 @@ app.options("/api/*", cors.preflight({ origin: "*", maxAge: 3600 }));
 
 ### Options
 
-| Option                 | Type                                                        | Default                          | Description                                                    |
-| ---------------------- | ----------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- |
-| `origin`               | `boolean \| string \| string[] \| RegExp \| OriginDelegate` | `"*"`                            | Origin policy. `false` disables CORS.                          |
-| `methods`              | `string \| string[]`                                        | `GET,HEAD,PUT,PATCH,POST,DELETE` | Allowed methods (preflight `Access-Control-Allow-Methods`).    |
-| `allowedHeaders`       | `string \| string[]`                                        | _(reflect request)_              | Allowed request headers (`Access-Control-Allow-Headers`).      |
-| `exposedHeaders`       | `string \| string[]`                                        | _(none)_                         | Response headers exposed to the client.                        |
-| `credentials`          | `boolean`                                                   | `false`                          | Send `Access-Control-Allow-Credentials: true`.                 |
-| `maxAge`               | `number \| string`                                          | _(none)_                         | Preflight cache lifetime in seconds.                           |
-| `preflightContinue`    | `boolean`                                                   | `false`                          | If `true`, don't short-circuit OPTIONS — pass to next handler. |
-| `optionsSuccessStatus` | `number`                                                    | `204`                            | Status code for short-circuited preflight responses.           |
+| Option                 | Type                                                        | Default                                | Description                                                    |
+| ---------------------- | ----------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------- |
+| `origin`               | `boolean \| string \| string[] \| RegExp \| OriginDelegate` | `"*"`                                  | Origin policy. `false` disables CORS.                          |
+| `methods`              | `string \| string[]`                                        | `GET,HEAD,PUT,PATCH,POST,DELETE,QUERY` | Allowed methods (preflight `Access-Control-Allow-Methods`).    |
+| `allowedHeaders`       | `string \| string[]`                                        | _(reflect request)_                    | Allowed request headers (`Access-Control-Allow-Headers`).      |
+| `exposedHeaders`       | `string \| string[]`                                        | _(none)_                               | Response headers exposed to the client.                        |
+| `credentials`          | `boolean`                                                   | `false`                                | Send `Access-Control-Allow-Credentials: true`.                 |
+| `maxAge`               | `number \| string`                                          | _(none)_                               | Preflight cache lifetime in seconds.                           |
+| `preflightContinue`    | `boolean`                                                   | `false`                                | If `true`, don't short-circuit OPTIONS — pass to next handler. |
+| `optionsSuccessStatus` | `number`                                                    | `204`                                  | Status code for short-circuited preflight responses.           |
 
 See `examples/http/cors.ts` for a runnable example.
+
+## HTTP `QUERY` Method
+
+Sinwan supports the HTTP `QUERY` method ([draft-ietf-httpbis-safe-method-w-body](https://datatracker.ietf.org/doc/draft-ietf-httpbis-safe-method-w-body/)) — a safe, idempotent method that, unlike `GET`, carries a request body. It is designed for complex queries that don't fit in the URL query string (large/structured query payloads, sensitive parameters that shouldn't appear in URLs).
+
+Register a `QUERY` route with `app.query()` (also available on `HTTPRouter` and the fluent module router). Read the query payload with `ctx.parseBody()` / `ctx.req.json()` like any other body-carrying method:
+
+```ts
+import { Sinwan } from "sinwan-engine";
+
+const app = await Sinwan.create();
+
+app.query("/search", async (ctx) => {
+  const { q, limit = 10 } = await ctx.parseBody<{
+    q: string;
+    limit?: number;
+  }>();
+  ctx.json({ results: await search(q, limit) });
+});
+
+// curl -X QUERY http://localhost:3000/search \
+//   -H "Content-Type: application/json" \
+//   -d '{"q":"hello","limit":5}'
+```
+
+`QUERY` is included in the default CORS `Access-Control-Allow-Methods` and is advertised in the RFC 9110 `Allow` header on `405 Method Not Allowed` responses. There is no `QUERY`→`GET` fallback (the spec defines none); use `app.all()` if you want a single handler to cover multiple methods.
 
 ## Features
 
 - **Multi-protocol**: HTTP, WebSocket, TCP, UDP, and gRPC from one engine
+- **HTTP `QUERY` method**: Safe, idempotent, body-carrying queries via `app.query()`
 - **Engine-driven pipeline**: Explicit orchestration in `Runtime.fetch()` — no `next()` chaining
 - **Event bus**: Typed events with wildcards, AbortSignal support, and tracing
 - **Lifecycle manager**: Five-phase lifecycle (`idle → init → ready → shutdown → destroyed`)
@@ -177,6 +205,7 @@ See `examples/http/cors.ts` for a runnable example.
 - **gRPC support**: Optional — install `sinwan-grpc` to enable typed gRPC services
 - **Static files**: Serve directories with `app.static(prefix, root)`
 - **Internal assets**: Built-in favicon and robots.txt handling
+- **100% test coverage**: Every line in the engine is covered by automated tests
 
 ## Development
 

@@ -18,6 +18,7 @@ const SPECIFIC_METHODS = [
   "DELETE",
   "OPTIONS",
   "HEAD",
+  "QUERY",
 ] as const;
 
 type SpecificMethod = (typeof SPECIFIC_METHODS)[number];
@@ -306,6 +307,7 @@ export class HTTPRouter {
     DELETE: new Map(),
     OPTIONS: new Map(),
     HEAD: new Map(),
+    QUERY: new Map(),
   };
 
   private readonly staticAll: Map<string, RouteHandler[]> = new Map();
@@ -318,6 +320,7 @@ export class HTTPRouter {
     DELETE: createRadixNode(""),
     OPTIONS: createRadixNode(""),
     HEAD: createRadixNode(""),
+    QUERY: createRadixNode(""),
   };
 
   private readonly radixAll: RadixNode = createRadixNode("");
@@ -437,6 +440,17 @@ export class HTTPRouter {
   head(path: string, ...handlers: RouteHandler[]) {
     this.add("HEAD", path, handlers);
   }
+  /**
+   * Register a QUERY route handler.
+   *
+   * `QUERY` (draft-ietf-httpbis-safe-method-w-body) is a safe, idempotent HTTP
+   * method that — unlike `GET` — carries a request body, intended for complex
+   * queries that don't fit in the URL query string. The body is read with
+   * `ctx.parseBody()` / `ctx.req.json()` like any other body-carrying method.
+   */
+  query(path: string, ...handlers: RouteHandler[]) {
+    this.add("QUERY", path, handlers);
+  }
   all(path: string, ...handlers: RouteHandler[]) {
     this.add("ALL", path, handlers);
   }
@@ -491,7 +505,7 @@ export class HTTPRouter {
         handlers: RouteHandler[];
         params: Record<string, string>;
       }
-    | { type: "method-not-allowed" }
+    | { type: "method-not-allowed"; allowed: SpecificMethod[] }
     | null {
     const m = isSpecificMethod(method) ? method : undefined;
 
@@ -591,9 +605,38 @@ export class HTTPRouter {
       this.staticAll.has(pathname) ||
       radixHasAnyMethod(this.radixAll, segsFor405, 0);
 
-    if (routeExists) return { type: "method-not-allowed" };
+    if (routeExists)
+      return {
+        type: "method-not-allowed",
+        allowed: this.resolveAllowedMethods(pathname, segsFor405),
+      };
 
     return null;
+  }
+
+  /**
+   * Compute the list of `SpecificMethod`s that have a handler (static or radix)
+   * for `pathname`, used to populate the RFC 9110 `Allow` header on 405
+   * responses.
+   *
+   * Called only from the 405 path, which is reached after the ALL bucket
+   * fallback (step 3) has already failed to match — so no `ALL` route exists
+   * for this pathname and we only need to scan the per-method buckets.
+   */
+  private resolveAllowedMethods(
+    pathname: string,
+    segments: string[],
+  ): SpecificMethod[] {
+    const allowed: SpecificMethod[] = [];
+    for (const sm of SPECIFIC_METHODS) {
+      if (
+        this.staticRoutes[sm].has(pathname) ||
+        radixHasAnyMethod(this.radix[sm], segments, 0)
+      ) {
+        allowed.push(sm);
+      }
+    }
+    return allowed;
   }
 
   private resolveAll(
@@ -702,6 +745,11 @@ export class HTTPRouter {
     }
 
     if (match.type === "method-not-allowed") {
+      // RFC 9110 §15.5.5: a 405 response MUST include an Allow header listing
+      // the methods that have a handler for the matched path.
+      if (match.allowed.length > 0) {
+        ctx.setHeader("Allow", match.allowed.join(", "));
+      }
       ctx.json({ error: "Method Not Allowed" }, 405);
       return;
     }

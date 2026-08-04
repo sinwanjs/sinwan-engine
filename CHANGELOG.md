@@ -2,6 +2,30 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] — 2026-08-04 — HTTP `QUERY` Method Support
+
+### Added
+
+- **HTTP `QUERY` method** ([draft-ietf-httpbis-safe-method-w-body](https://datatracker.ietf.org/doc/draft-ietf-httpbis-safe-method-w-body/)) — a safe, idempotent HTTP method that, unlike `GET`, carries a request body, intended for complex queries that don't fit in the URL query string. `QUERY` is now a first-class specific method in the radix router.
+- **`Sinwan.prototype.query()`** — registers a `QUERY` route handler, mirroring `get`/`post`/…​ and returning `this` for fluent chaining.
+- **`HTTPRouter.prototype.query()`** — underlying router registrar for `QUERY`.
+- **`HTTPRouterFluent.query()`** — fluent module router registrar for `QUERY` (`createHttpModule` routes callback).
+- **`Allow` header on `405 Method Not Allowed`** — `405` responses now include an RFC 9110 §15.5.5 `Allow` header listing the methods that have a handler for the matched path. `HTTPRouter.resolve()`'s `method-not-allowed` variant now carries an `allowed: SpecificMethod[]` field.
+
+### Changed
+
+- **CORS default `methods`** — `cors()` now advertises `GET,HEAD,PUT,PATCH,POST,DELETE,QUERY` in preflight `Access-Control-Allow-Methods` responses (previously `GET,HEAD,PUT,PATCH,POST,DELETE`). Users with an explicit `methods` config are unaffected.
+
+## [1.2.0] — 2026-08-03 — Built-in CORS Middleware
+
+### Added
+
+- **Built-in CORS middleware** — port of the express `cors` package adapted to Sinwan's `ctx`-only handler model. Supports static/dynamic options, static/dynamic/regex/array origins, credentials, allowed/exposed headers, max-age, preflight short-circuit, and proper `Vary` header de-duplication. Includes `cors.preflight()` helper for explicit OPTIONS routes. No external dependencies.
+  - `src/middleware/cors.ts`: middleware + types + helpers
+  - `src/index.ts`: export `cors`, `CorsOptions`, `CorsOptionsDelegate`, `OriginOption`, `OriginDelegate`, `StaticOrigin`
+  - `__test__/middleware/cors.test.ts`: 32 tests, 100% line coverage
+  - `README.md`: CORS usage section + options table + Features bullet
+
 ## [1.1.1] — 2026-08-03 — Middleware Registration-Order Semantics
 
 ### Changed

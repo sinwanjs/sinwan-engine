@@ -224,7 +224,7 @@ describe("cors middleware", () => {
       );
       expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
       expect(res.headers.get("Access-Control-Allow-Methods")).toBe(
-        "GET,HEAD,PUT,PATCH,POST,DELETE",
+        "GET,HEAD,PUT,PATCH,POST,DELETE,QUERY",
       );
       // allowedHeaders configured explicitly → not reflected, uses config
       expect(res.headers.get("Access-Control-Allow-Headers")).toBe(
@@ -318,6 +318,29 @@ describe("cors middleware", () => {
         createMockReq("http://localhost/", "OPTIONS"),
       );
       expect(res.headers.get("Access-Control-Allow-Methods")).toBe("GET,POST");
+    });
+
+    test("default methods include QUERY", async () => {
+      const router = corsApp();
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/", "OPTIONS"),
+      );
+      const methods = res.headers
+        .get("Access-Control-Allow-Methods")!
+        .split(",");
+      expect(methods).toContain("QUERY");
+      expect(methods).toEqual(
+        expect.arrayContaining([
+          "GET",
+          "HEAD",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE",
+          "QUERY",
+        ]),
+      );
     });
   });
 

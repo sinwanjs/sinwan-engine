@@ -167,6 +167,18 @@ describe("HTTPRouter", () => {
       expect(routes[1]!.method).toBe("POST");
       expect(routes[1]!.path).toBe("/b");
     });
+
+    test("getMiddlewares() returns a copy of registered middleware", () => {
+      const router = new HTTPRouter();
+      const mw = () => {};
+      router.use(mw);
+      const list = router.getMiddlewares();
+      expect(list.length).toBe(1);
+      expect(list[0]).toBe(mw);
+      // Returned list is a copy — mutating it does not affect the router.
+      list.pop();
+      expect(router.getMiddlewares().length).toBe(1);
+    });
   });
 
   // ─── Static routes (exact match) ─────────────────────────
@@ -541,7 +553,7 @@ describe("HTTPRouter", () => {
       const router = new HTTPRouter();
       router.post("/users", () => {});
       const result = resolveReq(router, "GET", "http://localhost/users");
-      expect(result).toEqual({ type: "method-not-allowed" });
+      expect(result).toEqual({ type: "method-not-allowed", allowed: ["POST"] });
     });
 
     test("returns match for static route", () => {
@@ -595,7 +607,7 @@ describe("HTTPRouter", () => {
       router.get("/test", () => {});
       const result = resolveReq(router, "TRACE", "http://localhost/test");
       // TRACE is not a specific method, ALL has no route, but GET does → 405
-      expect(result).toEqual({ type: "method-not-allowed" });
+      expect(result).toEqual({ type: "method-not-allowed", allowed: ["GET"] });
     });
 
     test("HEAD fallback to GET static", () => {
@@ -619,7 +631,7 @@ describe("HTTPRouter", () => {
       const router = new HTTPRouter();
       router.get("/users/:id", () => {});
       const result = resolveReq(router, "POST", "http://localhost/users/5");
-      expect(result).toEqual({ type: "method-not-allowed" });
+      expect(result).toEqual({ type: "method-not-allowed", allowed: ["GET"] });
     });
 
     test("unknown method matches ALL route", () => {
@@ -635,7 +647,121 @@ describe("HTTPRouter", () => {
       const router = new HTTPRouter();
       router.get("/api/*", () => {});
       const result = resolveReq(router, "POST", "http://localhost/api/x");
-      expect(result).toEqual({ type: "method-not-allowed" });
+      expect(result).toEqual({ type: "method-not-allowed", allowed: ["GET"] });
+    });
+  });
+
+  // ─── QUERY method ─────────────────────────────────────────
+
+  describe("QUERY method", () => {
+    test("query() registers QUERY route", async () => {
+      const router = new HTTPRouter();
+      router.query("/search", (ctx) => ctx.json({ ok: true }));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/search", "QUERY"),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+    });
+
+    test("QUERY handler can read a request body", async () => {
+      const router = new HTTPRouter();
+      router.query("/search", async (ctx) => {
+        const body = await ctx.parseBody<{ q?: string }>();
+        ctx.json({ echo: body?.q });
+      });
+      const res = await runFetch(
+        router,
+        new Request("http://localhost/search", {
+          method: "QUERY",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ q: "hello" }),
+        }) as unknown as Request,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ echo: "hello" });
+    });
+
+    test("QUERY matches param routes", async () => {
+      const router = new HTTPRouter();
+      router.query("/items/:id", (ctx) => ctx.json({ id: ctx.params["id"] }));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/items/42", "QUERY"),
+      );
+      expect(await res.json()).toEqual({ id: "42" });
+    });
+
+    test("QUERY matches wildcard routes", async () => {
+      const router = new HTTPRouter();
+      router.query("/files/*", (ctx) =>
+        ctx.json({ wildcard: ctx.params["_wildcard"] }),
+      );
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/files/a/b", "QUERY"),
+      );
+      expect(await res.json()).toEqual({ wildcard: "/a/b" });
+    });
+
+    test("405 with Allow header when QUERY route exists and method differs", async () => {
+      const router = new HTTPRouter();
+      router.query("/q", (ctx) => ctx.json({}));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/q", "POST"),
+      );
+      expect(res.status).toBe(405);
+      const allow = res.headers.get("Allow");
+      expect(allow).not.toBeNull();
+      expect(allow!.split(",").map((m) => m.trim())).toContain("QUERY");
+    });
+
+    test("405 Allow header lists allowed method (POST only)", async () => {
+      const router = new HTTPRouter();
+      router.post("/users", (ctx) => ctx.json({}));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/users", "GET"),
+      );
+      expect(res.status).toBe(405);
+      expect(res.headers.get("Allow")).toBe("POST");
+    });
+
+    test("405 Allow header lists multiple allowed methods", async () => {
+      const router = new HTTPRouter();
+      router.get("/multi", (ctx) => ctx.json({}));
+      router.post("/multi", (ctx) => ctx.json({}));
+      router.query("/multi", (ctx) => ctx.json({}));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/multi", "DELETE"),
+      );
+      expect(res.status).toBe(405);
+      const allowed = res.headers
+        .get("Allow")!
+        .split(",")
+        .map((m) => m.trim());
+      expect(allowed).toEqual(["GET", "POST", "QUERY"]);
+    });
+
+    test("resolve() returns match for QUERY route", () => {
+      const router = new HTTPRouter();
+      router.query("/q", () => {});
+      const result = resolveReq(router, "QUERY", "http://localhost/q");
+      expect(result?.type).toBe("match");
+      if (result?.type === "match") expect(result.source).toBe("specific");
+    });
+
+    test("resolve() returns method-not-allowed with QUERY in allowed", () => {
+      const router = new HTTPRouter();
+      router.query("/q", () => {});
+      const result = resolveReq(router, "POST", "http://localhost/q");
+      expect(result).toEqual({
+        type: "method-not-allowed",
+        allowed: ["QUERY"],
+      });
     });
   });
 
@@ -968,6 +1094,38 @@ describe("HTTPRouter", () => {
       expect(res.headers.get("X-1")).toBe("1");
       expect(res.headers.get("X-2")).toBe("2");
       expect(await res.json()).toEqual({ done: true });
+    });
+  });
+
+  // ─── runChain edge cases (function coverage) ─────────────
+
+  describe("runChain edge cases", () => {
+    test("sync handler fails and async onError handles it", async () => {
+      const router = new HTTPRouter();
+      router.get("/sync-fail", (ctx) => {
+        ctx.fail(new Error("sync boom"));
+      });
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/sync-fail"),
+      );
+      // The runtime's errorHandler is the onError callback; it sets a 500 response.
+      expect(res.status).toBe(500);
+    });
+
+    test("async specific handler falls through to ALL (async branch)", async () => {
+      const router = new HTTPRouter();
+      router.get("/page", async (ctx) => {
+        // Async handler that does NOT respond — falls through to ALL.
+        ctx.setHeader("X-Async", "1");
+      });
+      router.all("/page", (ctx) => ctx.json({ all: true }));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/page"),
+      );
+      expect(res.headers.get("X-Async")).toBe("1");
+      expect(await res.json()).toEqual({ all: true });
     });
   });
 });

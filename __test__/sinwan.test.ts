@@ -303,6 +303,11 @@ describe("Sinwan", () => {
       expect(app.head("/test", () => {})).toBe(app);
     });
 
+    test("query() registers a QUERY route", () => {
+      const app = new Sinwan();
+      expect(app.query("/test", () => {})).toBe(app);
+    });
+
     test("all() registers a catch-all route", () => {
       const app = new Sinwan();
       expect(app.all("/test", () => {})).toBe(app);
@@ -735,6 +740,35 @@ describe("Sinwan", () => {
       expect(app.listen(3000)).rejects.toThrow(
         "Failed to start server on port 3000: port in use",
       );
+    });
+
+    test("fetch handler (non-WS branch) routes requests", async () => {
+      const app = await Sinwan.create();
+      app.get("/test", (ctx) => ctx.json({ ok: true }));
+      await app.listen(3000);
+      const fetchFn = capturedServeOptions?.fetch as (
+        req: Request,
+      ) => Response | Promise<Response>;
+      expect(typeof fetchFn).toBe("function");
+      const res = await fetchFn(new Request("http://localhost/test"));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      app.stop();
+    });
+
+    test("fetch handler (WS branch) routes requests", async () => {
+      const app = await Sinwan.create();
+      app.ws("/chat", { open: () => {} });
+      app.get("/test", (ctx) => ctx.json({ ok: true }));
+      await app.listen(3000);
+      const fetchFn = capturedServeOptions?.fetch as (
+        req: Request,
+      ) => Response | Promise<Response>;
+      expect(typeof fetchFn).toBe("function");
+      const res = await fetchFn(new Request("http://localhost/test"));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      app.stop();
     });
 
     test("wraps lifecycle.ready errors and stops server", async () => {

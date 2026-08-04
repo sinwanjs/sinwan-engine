@@ -368,6 +368,30 @@ export class Sinwan {
   }
 
   /**
+   * Register a QUERY route handler.
+   *
+   * `QUERY` (draft-ietf-httpbis-safe-method-w-body) is a safe, idempotent HTTP
+   * method that — unlike `GET` — carries a request body, intended for complex
+   * queries that don't fit in the URL query string. Read the query payload with
+   * `await ctx.parseBody()` (or `ctx.req.json()`) like any other body-carrying
+   * method.
+   *
+   * ```ts
+   * app.query("/search", async (ctx) => {
+   *   const { q, limit } = await ctx.parseBody<{ q: string; limit?: number }>();
+   *   ctx.json({ results: await search(q, limit) });
+   * });
+   * ```
+   *
+   * @returns `this` for fluent chaining.
+   */
+  query(path: string, ...handlers: RouteHandler[]): this {
+    this.validateRoute("QUERY", path, handlers);
+    this.httpRouter.query(path, ...handlers);
+    return this;
+  }
+
+  /**
    * Register a catch-all route for every HTTP method.
    *
    * ```ts
