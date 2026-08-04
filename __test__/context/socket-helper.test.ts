@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { SocketHelper } from "../../src/context/socket-helper";
+import { SocketHelper } from "../../src/context/helpers/socket-helper";
 import {
   Context,
   type WSSData,

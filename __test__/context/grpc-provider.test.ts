@@ -5,7 +5,7 @@ import {
   hasGRPCProvider,
   resetGRPCProvider,
   type GRPCProvider,
-} from "../../src/context/grpc-provider";
+} from "../../src/context/helpers/grpc-provider";
 import type { Runtime } from "../../src/runtime";
 
 function createMockProvider(): GRPCProvider {

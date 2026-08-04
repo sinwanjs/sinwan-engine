@@ -36,7 +36,7 @@ import type {
   ResponseKind,
 } from "../types";
 import type { SinwanUDPSocket } from "../routers/udp-router";
-import { SocketHelper } from "./socket-helper";
+import { SocketHelper } from "./helpers/socket-helper";
 import type { ErrorHandler } from "../error-handler";
 
 export interface WSSData {

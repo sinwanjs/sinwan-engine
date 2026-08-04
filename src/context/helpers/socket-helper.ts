@@ -1,6 +1,6 @@
 import type { ServerWebSocket, Socket, SocketAddress } from "bun";
-import type { Context, WSSData, TCPData, UDPData } from "./context";
-import type { SinwanUDPSocket } from "../routers/udp-router";
+import type { Context, WSSData, TCPData, UDPData } from "../context";
+import type { SinwanUDPSocket } from "../../routers/udp-router";
 
 /**
  * Focused helper for WebSocket, TCP, and UDP socket operations.

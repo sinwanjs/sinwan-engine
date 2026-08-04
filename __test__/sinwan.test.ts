@@ -6,7 +6,7 @@ import type { SinwanModule } from "../src/modules";
 import {
   registerGRPCProvider,
   type GRPCProvider,
-} from "../src/context/grpc-provider";
+} from "../src/context/helpers/grpc-provider";
 
 function createMockGRPCProvider(): GRPCProvider {
   return {

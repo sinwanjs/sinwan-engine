@@ -12,7 +12,7 @@
  * the @grpc/grpc-js code stays out of their bundle entirely.
  */
 
-import type { Runtime } from "../runtime";
+import type { Runtime } from "../../runtime";
 
 /**
  * Provider contract implemented by sinwan-grpc.

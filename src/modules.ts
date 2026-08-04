@@ -27,7 +27,7 @@ import type { Sinwan } from "./sinwan";
 import { HTTPRouter, type RouteHandler } from "./routers/http-router";
 import type { WSRouteConfig } from "./routers/ws-router";
 import type { TCPRouteConfig } from "./routers/tcp-router";
-import { getGRPCProvider } from "./context/grpc-provider";
+import { getGRPCProvider } from "./context/helpers/grpc-provider";
 import type { UDPRouteConfig } from "./routers/udp-router";
 import type { Plugin } from "./types";
 

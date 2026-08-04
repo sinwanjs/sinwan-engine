@@ -24,7 +24,10 @@ import {
   type UDPListenOptions,
   type UDPRouteConfig,
 } from "./routers/udp-router";
-import { getGRPCProvider, hasGRPCProvider } from "./context/grpc-provider";
+import {
+  getGRPCProvider,
+  hasGRPCProvider,
+} from "./context/helpers/grpc-provider";
 import { LifecycleManager } from "./lifecycle-manager";
 import { InternalAssets, type InternalAssetsOptions } from "./internal-assets";
 import type {

@@ -112,7 +112,7 @@ export {
   registerGRPCProvider,
   getGRPCProvider,
   hasGRPCProvider,
-} from "./context/grpc-provider";
+} from "./context/helpers/grpc-provider";
 
 // ─── Types ────────────────────────────────────────────────
 

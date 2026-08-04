@@ -20,7 +20,7 @@ import {
   registerGRPCProvider,
   resetGRPCProvider,
   type GRPCProvider,
-} from "../src/context/grpc-provider";
+} from "../src/context/helpers/grpc-provider";
 
 function createMockApp(): Sinwan {
   const calls: { method: string; args: unknown[] }[] = [];
