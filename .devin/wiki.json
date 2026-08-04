@@ -1,0 +1,279 @@
+{
+  "repo_notes": [
+    {
+      "content": ""
+    }
+  ],
+  "pages": [
+    {
+      "title": "Overview",
+      "purpose": "High-level introduction to sinwan-engine: what it is, why it exists, its multi-protocol philosophy, and how the major subsystems relate. Links to child pages for deeper coverage.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Getting Started",
+      "purpose": "Installation, environment requirements (Bun runtime), basic project setup, build pipeline (build.ts), TypeScript configuration, and a minimal 'Hello World' HTTP server example.",
+      "parent": "Overview",
+      "page_notes": [
+        {
+          "content": "Sinwan.listen() is an async method, so you should call it with await: await app.listen(3000); sinwan.ts:620-626"
+        }
+      ]
+    },
+    {
+      "title": "Core Concepts",
+      "purpose": "Explains the engine-driven pipeline (no next() pattern), context pooling, registration-order semantics, baked handler chains, and the unified multi-protocol model. Foundational reading before diving into subsystems.",
+      "parent": "Overview",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "The Sinwan Class",
+      "purpose": "Overview of the central Sinwan application class — its constructor, static factory, plugin/module registration, and how it wires together all internal subsystems. Links to child pages for lifecycle and module system details.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Lifecycle Management",
+      "purpose": "Deep dive into the LifecycleManager state machine: IDLE → INIT → READY → SHUTDOWN → DESTROYED transitions, async sequential event emission, guard assertions, and integration with listen/stop.",
+      "parent": "The Sinwan Class",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Plugin and Module System",
+      "purpose": "Explains the Plugin interface (install(runtime)), SinwanModule interface (register(app)), all createXxxModule factory functions, HTTPRouterFluent wrapper, scoped routing, and the GRPCProvider registry pattern.",
+      "parent": "The Sinwan Class",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Request Pipeline and Runtime",
+      "purpose": "Overview of how a request flows from Bun.serve through the Runtime.fetch pipeline to a final Response. Links to child pages for the runtime engine, context object, and response building.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Runtime Engine",
+      "purpose": "Detailed coverage of the Runtime class: context pool acquisition/release, the five-stage fetch pipeline (internal assets gate → WS upgrade → HTTP routing → finalization → event emission), error orchestration, and persistent-body handling for streams/SSE.",
+      "parent": "Request Pipeline and Runtime",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Context Object",
+      "purpose": "Comprehensive reference for the Context class: lifecycle flags (STOPPED, RESPONDED, STREAMING, SKIPPED, FAILED), response commit methods (json/text/stream/sse/file), body parsing with size limits, redirect-with-flash, state vs global maps, event scoping, and the disposal/pooling mechanism.",
+      "parent": "Request Pipeline and Runtime",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Response Building",
+      "purpose": "Covers the buildResponse function: fast-path string handling, null/empty bodies, stream/Buffer/Blob/AsyncIterator pass-through, JSON fallback, lazy header allocation, and SSE detection.",
+      "parent": "Request Pipeline and Runtime",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Routing",
+      "purpose": "Overview of the routing layer across all supported protocols. Links to child pages for HTTP routing and the non-HTTP protocol routers.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "HTTP Router",
+      "purpose": "Deep dive into HTTPRouter: dual-path resolution (static fast-path + radix tree), RadixNode structure, registration-order middleware baking, route groups and mounting, HEAD-to-GET fallback, ALL-bucket fallback, 405 detection, the runChain handler executor, and the secured static file server.",
+      "parent": "Routing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "WebSocket Router",
+      "purpose": "Covers WSRouter: route registration via ws(), the tryUpgrade HTTP-to-WS bridge, WSSData state migration, allowedStateKeys security, buildWebSocketHandlers for Bun.serve, hook lifecycle (upgrade/open/message/close/drain/ping/pong), and backpressure configuration.",
+      "parent": "Routing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "TCP and UDP Routers",
+      "purpose": "Covers TCPRouter (listen/connect, TLS, Unix sockets, hook lifecycle, server tracking, stop) and UDPRouter (udpSocket, datagram hooks, multicast). Explains the SinwanTCPData/SinwanUDPSocket wrappers and context acquisition/release patterns.",
+      "parent": "Routing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Event Bus and Type System",
+      "purpose": "Overview of the EventBus and the central types.ts definitions. Links to child pages for the event bus internals and the full type inventory.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "EventBus",
+      "purpose": "Detailed coverage of the EventBus: wildcard dispatch with hierarchical colon-delimited namespaces, LRU caches (dispatchCache, hasListenersCache), emitAsync/emitParallel/emitSync semantics, EmitResult STOP/CONTINUE flow control, AbortSignal listener cleanup, memory leak protections, and event tracing via ctx.recordEvent.",
+      "parent": "Event Bus and Type System",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Type System and Internal Event Map",
+      "purpose": "Reference for all key types exported from types.ts: LifecycleState/Event, InternalEventMap (request:start/end, response:set, ws:open, tcp:data, udp:data, grpc:call), ResponseKind, GRPCCallPayload, ErrorPayload, EventMeta, EventTraceEntry, and EventSource.",
+      "parent": "Event Bus and Type System",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Error Handling",
+      "purpose": "Overview of the error handling subsystem. Links to child pages for the normalizer and the full error handler.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "ErrorNormalizer",
+      "purpose": "Covers ErrorNormalizer: converting unknown thrown values to ErrorPayload, production vs development message masking, stack trace inclusion, statusCode extraction, the onError telemetry hook, and direct use by TCP/UDP/gRPC routers.",
+      "parent": "Error Handling",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "ErrorHandler",
+      "purpose": "Covers ErrorHandler: the handle() lifecycle (normalize → telemetry → state check → format → transmit), HTML vs JSON response types, the formatHtmlError dark-themed page with XSS escaping, formatResponse callback override, HTTP_STATUS_LABELS lookup table, and double-response prevention.",
+      "parent": "Error Handling",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Built-in Middleware",
+      "purpose": "Overview of the middleware included with sinwan-engine. Links to child pages for CORS and InternalAssets.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "CORS Middleware",
+      "purpose": "Full reference for the cors() factory and cors.preflight(): CorsOptions schema, StaticOrigin vs OriginDelegate, CorsOptionsDelegate per-request reconfiguration, configureOrigin/configureAllowedHeaders logic, Vary de-duplication, short-circuit preflight flow, and integration with the baked handler chain.",
+      "parent": "Built-in Middleware",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Internal Assets Handler",
+      "purpose": "Covers InternalAssets: default assets (favicon.ico, robots.txt, security.txt, sitemap.xml, manifest.json), passthrough patterns, block patterns, runtime register/unregister API, the handle() return values (handled/passthrough/continue), and InternalAssetsOptions configuration.",
+      "parent": "Built-in Middleware",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "gRPC Support",
+      "purpose": "Covers the optional gRPC subsystem: the GRPCProvider interface and registry (registerGRPCProvider/getGRPCProvider/hasGRPCProvider), the sinwan-grpc external package pattern, SocketHelper gRPC operations, GrpcContext, and the GRPCCallPayload event type.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Testing",
+      "purpose": "Overview of the test infrastructure and patterns used in sinwan-engine. Links to child pages for unit and integration testing approaches.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Unit Testing Patterns",
+      "purpose": "Covers the Bun test runner setup, test helpers (helpers.ts), programmatic request injection via app.request(), mock GRPCProvider pattern, and how individual subsystems (EventBus, LifecycleManager, ErrorNormalizer, routers) are tested in isolation.",
+      "parent": "Testing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Integration Testing",
+      "purpose": "Covers end-to-end integration test patterns: spinning up a live Bun server, testing HTTP/WS/TCP/UDP flows, error handler integration tests, and the CI/CD pipeline (GitHub Actions workflows for CI and release).",
+      "parent": "Testing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Glossary",
+      "purpose": "Definitions of all codebase-specific terms, abbreviations, class names, and architectural concepts that an onboarding engineer needs to know, with code pointers.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    }
+  ]
+}
