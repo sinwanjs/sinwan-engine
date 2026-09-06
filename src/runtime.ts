@@ -9,7 +9,12 @@
  *   3. HTTPRouter — resolves the route and runs the handler chain.
  */
 
-import { Context } from "./context/context";
+import { BaseContext, type ContextOptions } from "./context/base-context";
+import { HttpContext } from "./context/http-context";
+import { WsContext } from "./context/ws-context";
+import { TcpContext } from "./context/tcp-context";
+import { UdpContext } from "./context/udp-context";
+import { GrpcContext } from "./context/grpc-context";
 import { buildResponse } from "./response";
 import type { ErrorHandler } from "./error-handler";
 import type { ErrorNormalizer } from "./error-normalizer";
@@ -41,7 +46,12 @@ export class Runtime {
   public readonly internalAssets?: InternalAssets;
   public readonly wsRouter?: WSRouter;
   private readonly globalState: Map<string, unknown>;
-  private readonly contextPool: Context[] = [];
+  /** Per-protocol pools for the split context classes. */
+  private readonly httpPool: HttpContext[] = [];
+  private readonly wsPool: WsContext[] = [];
+  private readonly tcpPool: TcpContext[] = [];
+  private readonly udpPool: UdpContext[] = [];
+  private readonly grpcPool: GrpcContext[] = [];
   private readonly maxPoolSize: number;
 
   private readonly runtimeEmitOptions = { source: "runtime" as const };
@@ -158,7 +168,7 @@ export class Runtime {
    * Stage 1: run the internal-assets gate. Returns `true` if the request was
    * consumed (handled or passthrough) and the pipeline should stop.
    */
-  private gateInternalAssets(ctx: Context): boolean {
+  private gateInternalAssets(ctx: HttpContext): boolean {
     const assets = this.internalAssets;
     if (!assets) return false;
     const result = assets.handle(ctx);
@@ -170,13 +180,13 @@ export class Runtime {
   /**
    * Stage 3: run the HTTP router against the context.
    */
-  private runHttp(ctx: Context): void | Promise<void> {
+  private runHttp(ctx: HttpContext): void | Promise<void> {
     return this.httpRouter.handle(ctx, (error) =>
       this.errorHandler.handle(error, ctx),
     );
   }
 
-  private finalizeResponse(ctx: Context, startTime: number): Response {
+  private finalizeResponse(ctx: HttpContext, startTime: number): Response {
     if (!ctx.hasResponded()) {
       ctx.json({ error: "No response was produced." }, 500);
     }
@@ -221,7 +231,7 @@ export class Runtime {
     return res;
   }
 
-  private async handleError(ctx: Context, error: unknown): Promise<void> {
+  private async handleError(ctx: HttpContext, error: unknown): Promise<void> {
     const bus = this.bus;
     if (bus.hasListeners("request:error")) {
       try {
@@ -229,41 +239,101 @@ export class Runtime {
           "request:error",
           ctx,
           { error },
-          this.runtimeEmitOptions,
+          { ...this.runtimeEmitOptions, forceDelivery: true },
         );
       } catch {}
     }
     if (bus.hasListeners("error")) {
       try {
-        await bus.emitAsync("error", ctx, error, this.runtimeEmitOptions);
+        await bus.emitAsync("error", ctx, error, {
+          ...this.runtimeEmitOptions,
+          forceDelivery: true,
+        });
       } catch {}
     }
     await this.errorHandler.handle(error, ctx);
   }
 
-  acquireContext(server?: Server<unknown>): Context {
-    const ctx = this.contextPool.pop();
-    if (ctx) {
-      ctx.reset({
-        bus: this.bus,
-        server,
-        errorHandler: this.errorHandler,
-        global: this.globalState,
-      });
-      return ctx;
-    }
-    return new Context({
+  acquireContext(server?: Server<unknown>): HttpContext {
+    return this.acquireHttpContext(server);
+  }
+
+  /** Build the shared context options for newly created contexts. */
+  private contextOptions(server?: Server<unknown>): ContextOptions {
+    return {
       bus: this.bus,
       server,
       errorHandler: this.errorHandler,
       global: this.globalState,
-    });
+    };
   }
 
-  releaseContext(ctx: Context): void {
+  /** Acquire an HttpContext from the HTTP pool (reused or new). */
+  acquireHttpContext(server?: Server<unknown>): HttpContext {
+    const ctx = this.httpPool.pop();
+    if (ctx) {
+      ctx.reset(this.contextOptions(server));
+      return ctx;
+    }
+    return new HttpContext(this.contextOptions(server));
+  }
+
+  /** Acquire a WsContext from the WS pool (reused or new). */
+  acquireWsContext(): WsContext {
+    const ctx = this.wsPool.pop();
+    if (ctx) {
+      ctx.reset(this.contextOptions());
+      return ctx;
+    }
+    return new WsContext(this.contextOptions());
+  }
+
+  /** Acquire a TcpContext from the TCP pool (reused or new). */
+  acquireTcpContext(): TcpContext {
+    const ctx = this.tcpPool.pop();
+    if (ctx) {
+      ctx.reset(this.contextOptions());
+      return ctx;
+    }
+    return new TcpContext(this.contextOptions());
+  }
+
+  /** Acquire a UdpContext from the UDP pool (reused or new). */
+  acquireUdpContext(): UdpContext {
+    const ctx = this.udpPool.pop();
+    if (ctx) {
+      ctx.reset(this.contextOptions());
+      return ctx;
+    }
+    return new UdpContext(this.contextOptions());
+  }
+
+  /** Acquire a GrpcContext from the gRPC pool (reused or new). */
+  acquireGrpcContext(): GrpcContext {
+    const ctx = this.grpcPool.pop();
+    if (ctx) {
+      ctx.reset(this.contextOptions());
+      return ctx;
+    }
+    return new GrpcContext(this.contextOptions());
+  }
+
+  /**
+   * Release a context back to its pool. Protocol-split contexts are
+   * routed to their per-protocol pool. Double-release is a no-op.
+   */
+  releaseContext(ctx: BaseContext): void {
     if (ctx.markReleased()) return;
-    if (this.contextPool.length < this.maxPoolSize) {
-      this.contextPool.push(ctx);
+    if (ctx instanceof HttpContext) {
+      if (this.httpPool.length < this.maxPoolSize) this.httpPool.push(ctx);
+    } else if (ctx instanceof WsContext) {
+      if (this.wsPool.length < this.maxPoolSize) this.wsPool.push(ctx);
+    } else if (ctx instanceof TcpContext) {
+      if (this.tcpPool.length < this.maxPoolSize) this.tcpPool.push(ctx);
+    } else if (ctx instanceof UdpContext) {
+      if (this.udpPool.length < this.maxPoolSize) this.udpPool.push(ctx);
+    } else if (ctx instanceof GrpcContext) {
+      if (this.grpcPool.length < this.maxPoolSize) this.grpcPool.push(ctx);
     }
   }
 }

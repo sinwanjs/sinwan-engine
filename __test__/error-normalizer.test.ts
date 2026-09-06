@@ -4,7 +4,7 @@ import {
   type ErrorHook,
   type ErrorNormalizerOptions,
 } from "../src/error-normalizer";
-import type { Context } from "../src/context/context";
+import type { HttpContext } from "../src/context/http-context";
 import type { ErrorPayload } from "../src/types";
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -275,7 +275,7 @@ describe("ErrorNormalizer", () => {
         receivedCtx = ctx;
       };
       const n = new ErrorNormalizer({ onError: hook });
-      const ctx = {} as Context;
+      const ctx = {} as HttpContext;
       await n.report(new Error("test"), ctx);
       expect(receivedError).toBeInstanceOf(Error);
       expect((receivedError as Error).message).toBe("test");

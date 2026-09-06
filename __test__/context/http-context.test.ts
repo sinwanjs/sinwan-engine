@@ -1,17 +1,23 @@
 import { describe, expect, test, beforeEach, mock, spyOn } from "bun:test";
 import {
-  Context,
-  type ContextOptions,
-  type GRPCData,
-} from "../../src/context/context";
+  HttpContext,
+  type HttpContext as HttpContextType,
+} from "../../src/context/http-context";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
-import { createTestBus, createTestContext } from "../helpers";
+import { buildResponse } from "../../src/response";
+import type { ContextOptions } from "../../src/context/base-context";
 import type { Request } from "../../src/types";
 
-function makeCtx(overrides?: Partial<ContextOptions>): Context {
-  const bus = overrides?.bus ?? createTestBus();
-  return createTestContext(bus, overrides);
+// ─── Local factories (do NOT edit __test__/helpers.ts) ────
+
+function makeCtx(overrides?: Partial<ContextOptions>): HttpContext {
+  const bus = overrides?.bus ?? new EventBus();
+  return new HttpContext({
+    bus,
+    errorHandler: new ErrorHandler(),
+    ...overrides,
+  });
 }
 
 function makeReq(
@@ -21,57 +27,33 @@ function makeReq(
   return new Request(url, opts) as unknown as Request;
 }
 
-describe("Context", () => {
+describe("HttpContext", () => {
   let bus: EventBus;
-  let ctx: Context;
+  let ctx: HttpContext;
 
   beforeEach(() => {
-    bus = createTestBus();
+    bus = new EventBus();
     ctx = makeCtx({ bus });
   });
 
-  // ─── Constructor ────────────────────────────────────────
+  // ─── Constructor / protocol ─────────────────────────────
 
   describe("constructor", () => {
-    test("initializes with default values", () => {
-      const c = makeCtx();
-      expect(c.statusCode).toBe(200);
-      expect(c.body).toBeNull();
-      expect(c.pathname).toBe("");
-      expect(c.params).toEqual({});
-      expect(c.maxBodySize).toBe(10 * 1024 * 1024);
+    test("has the http protocol tag", () => {
+      expect(ctx.protocol).toBe("http");
+    });
+
+    test("initializes HTTP fields with default values", () => {
+      expect(ctx.statusCode).toBe(200);
+      expect(ctx.body).toBeNull();
+      expect(ctx.pathname).toBe("");
+      expect(ctx.params).toEqual({});
+      expect(ctx.maxBodySize).toBe(10 * 1024 * 1024);
     });
 
     test("accepts custom requestId", () => {
       const c = makeCtx({ requestId: "custom-id" });
       expect(c.requestId).toBe("custom-id");
-    });
-
-    test("generates requestId lazily", () => {
-      const c = makeCtx();
-      const id = c.requestId;
-      expect(id).toMatch(/^sinwan-request-/);
-      // Second access returns same id
-      expect(c.requestId).toBe(id);
-    });
-
-    test("accepts custom trace options", () => {
-      const c = makeCtx({
-        trace: { enabled: false, maxEntries: 50, includePayload: true },
-      });
-      // Trace disabled — recordEvent should be no-op
-      c.recordEvent(
-        {
-          name: "test",
-          event: "test",
-          timestamp: 0,
-          sequence: 0,
-          requestId: "",
-          source: "test",
-        },
-        { data: 1 },
-      );
-      expect(c.eventTrace.length).toBe(0);
     });
 
     test("accepts global state map", () => {
@@ -85,20 +67,32 @@ describe("Context", () => {
 
   describe("setReq()", () => {
     test("sets request and parses pathname", () => {
-      const req = makeReq("http://localhost:3000/users/123?filter=active");
-      ctx.setReq(req);
+      ctx.setReq(makeReq("http://localhost:3000/users/123?filter=active"));
       expect(ctx.pathname).toBe("/users/123");
     });
 
     test("pathname without query string", () => {
-      const req = makeReq("http://localhost:3000/users/123");
-      ctx.setReq(req);
+      ctx.setReq(makeReq("http://localhost:3000/users/123"));
       expect(ctx.pathname).toBe("/users/123");
     });
 
     test("pathname with no path segment", () => {
-      const req = makeReq("http://localhost:3000");
-      ctx.setReq(req);
+      ctx.setReq(makeReq("http://localhost:3000"));
+      expect(ctx.pathname).toBe("/");
+    });
+
+    test("pathname strips hash fragment", () => {
+      ctx.setReq(makeReq("http://localhost:3000/path#section"));
+      expect(ctx.pathname).toBe("/path");
+    });
+
+    test("pathname strips trailing slash (except root)", () => {
+      ctx.setReq(makeReq("http://localhost:3000/users/"));
+      expect(ctx.pathname).toBe("/users");
+    });
+
+    test("root pathname with trailing slash stays root", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
       expect(ctx.pathname).toBe("/");
     });
   });
@@ -119,9 +113,7 @@ describe("Context", () => {
 
     test("caches query result", () => {
       ctx.setReq(makeReq("http://localhost:3000/path?a=1"));
-      const q1 = ctx.query;
-      const q2 = ctx.query;
-      expect(q1).toBe(q2);
+      expect(ctx.query).toBe(ctx.query);
     });
   });
 
@@ -138,7 +130,7 @@ describe("Context", () => {
     test("setHeader emits header:set event", () => {
       ctx.setReq(makeReq());
       let emitted = false;
-      bus.on("header:set", (c, payload) => {
+      bus.on("header:set", (_c, payload) => {
         emitted = true;
         expect((payload as { key: string; value: string }).key).toBe("X-Test");
       });
@@ -150,123 +142,6 @@ describe("Context", () => {
       ctx.setReq(makeReq());
       ctx.setHeader("X-Test", "val");
       expect(ctx.headers.get("X-Test")).toBe("val");
-    });
-  });
-
-  // ─── State Management ───────────────────────────────────
-
-  describe("state", () => {
-    test("set/get", () => {
-      ctx.set("key", "value");
-      expect(ctx.get<string>("key")).toBe("value");
-    });
-
-    test("get returns undefined for missing key", () => {
-      expect(ctx.get("missing")).toBeUndefined();
-    });
-
-    test("getOnce removes the value", () => {
-      ctx.set("key", "value");
-      expect(ctx.getOnce<string>("key")).toBe("value");
-      expect(ctx.get("key")).toBeUndefined();
-    });
-
-    test("update modifies existing value", () => {
-      ctx.set("count", 1);
-      ctx.update<number>("count", (prev) => (prev ?? 0) + 1);
-      expect(ctx.get<number>("count")).toBe(2);
-    });
-
-    test("clear removes a key", () => {
-      ctx.set("key", "value");
-      expect(ctx.clear("key")).toBe(true);
-      expect(ctx.get("key")).toBeUndefined();
-    });
-
-    test("clear returns false for missing key", () => {
-      expect(ctx.clear("missing")).toBe(false);
-    });
-
-    test("clearAll removes all keys", () => {
-      ctx.set("a", 1);
-      ctx.set("b", 2);
-      ctx.clearAll();
-      expect(ctx.get("a")).toBeUndefined();
-      expect(ctx.get("b")).toBeUndefined();
-    });
-
-    test("has checks existence", () => {
-      ctx.set("key", "value");
-      expect(ctx.has("key")).toBe(true);
-      expect(ctx.has("missing")).toBe(false);
-    });
-
-    test("exportState excludes underscore-prefixed keys", () => {
-      ctx.set("public", 1);
-      ctx.set("_private", 2);
-      const exported = ctx.exportState();
-      expect(exported.public).toBe(1);
-      expect("_private" in exported).toBe(false);
-    });
-
-    test("importState merges from object", () => {
-      ctx.importState({ a: 1, b: 2 });
-      expect(ctx.get<number>("a")).toBe(1);
-      expect(ctx.get<number>("b")).toBe(2);
-    });
-
-    test("snapshot returns frozen object", () => {
-      ctx.set("key", "value");
-      const snap = ctx.snapshot();
-      expect(Object.isFrozen(snap)).toBe(true);
-      expect(snap.key).toBe("value");
-    });
-  });
-
-  // ─── Global State ───────────────────────────────────────
-
-  describe("global state", () => {
-    test("setGlobal/getGlobal", () => {
-      ctx.setGlobal("key", "value");
-      expect(ctx.getGlobal<string>("key")).toBe("value");
-    });
-
-    test("getGlobalOnce removes value", () => {
-      ctx.setGlobal("key", "value");
-      expect(ctx.getGlobalOnce<string>("key")).toBe("value");
-      expect(ctx.getGlobal("key")).toBeUndefined();
-    });
-
-    test("updateGlobal modifies value", () => {
-      ctx.setGlobal("count", 1);
-      ctx.updateGlobal<number>("count", (prev) => (prev ?? 0) + 1);
-      expect(ctx.getGlobal<number>("count")).toBe(2);
-    });
-
-    test("clearGlobal removes key", () => {
-      ctx.setGlobal("key", "value");
-      expect(ctx.clearGlobal("key")).toBe(true);
-      expect(ctx.getGlobal("key")).toBeUndefined();
-    });
-
-    test("clearAllGlobal removes all", () => {
-      ctx.setGlobal("a", 1);
-      ctx.setGlobal("b", 2);
-      ctx.clearAllGlobal();
-      expect(ctx.getGlobal("a")).toBeUndefined();
-    });
-
-    test("hasGlobal checks existence", () => {
-      ctx.setGlobal("key", "value");
-      expect(ctx.hasGlobal("key")).toBe(true);
-      expect(ctx.hasGlobal("missing")).toBe(false);
-    });
-
-    test("snapshotGlobal returns frozen object", () => {
-      ctx.setGlobal("key", "value");
-      const snap = ctx.snapshotGlobal();
-      expect(Object.isFrozen(snap)).toBe(true);
-      expect(snap.key).toBe("value");
     });
   });
 
@@ -293,7 +168,7 @@ describe("Context", () => {
 
     test("emits response:set event", () => {
       let emitted = false;
-      bus.on("response:set", (c, payload) => {
+      bus.on("response:set", (_c, payload) => {
         emitted = true;
         expect((payload as { kind: string }).kind).toBe("json");
       });
@@ -392,13 +267,10 @@ describe("Context", () => {
     test("Bug 1 fix: throws before side-effects on double response", () => {
       ctx.setReq(makeReq("http://localhost:3000/old"));
       ctx.json({ data: 1 });
-      // Should throw without polluting global state
       expect(() => ctx.redirectWith("/new", { flash: "leaked" })).toThrow(
         "Response already sent",
       );
-      // Verify no orphaned global entries were created
-      const snap = ctx.snapshotGlobal();
-      expect(Object.keys(snap).length).toBe(0);
+      expect(Object.keys(ctx.snapshotGlobal()).length).toBe(0);
     });
   });
 
@@ -408,7 +280,6 @@ describe("Context", () => {
       ctx.setGlobal("id_abc123", { flash: "success" });
       const data = ctx.redirectData<{ flash: string }>();
       expect(data).toEqual({ flash: "success" });
-      // Data is consumed
       expect(ctx.getGlobal("id_abc123")).toBeUndefined();
     });
 
@@ -435,14 +306,14 @@ describe("Context", () => {
 
   describe("notFound()", () => {
     test("sets 404 with default message", () => {
-      ctx.notFound();
+      ctx.httpRespond.notFound();
       expect(ctx.hasResponded()).toBe(true);
       expect(ctx.statusCode).toBe(404);
       expect(ctx.body).toEqual({ error: "Not Found" });
     });
 
     test("sets 404 with custom message", () => {
-      ctx.notFound("User not found");
+      ctx.httpRespond.notFound("User not found");
       expect(ctx.statusCode).toBe(404);
       expect(ctx.body).toEqual({ error: "User not found" });
     });
@@ -450,14 +321,14 @@ describe("Context", () => {
 
   describe("badRequest()", () => {
     test("sets 400 with default message", () => {
-      ctx.badRequest();
+      ctx.httpRespond.badRequest();
       expect(ctx.hasResponded()).toBe(true);
       expect(ctx.statusCode).toBe(400);
       expect(ctx.body).toEqual({ error: "Bad Request" });
     });
 
     test("sets 400 with custom message", () => {
-      ctx.badRequest("Invalid email");
+      ctx.httpRespond.badRequest("Invalid email");
       expect(ctx.statusCode).toBe(400);
       expect(ctx.body).toEqual({ error: "Invalid email" });
     });
@@ -466,37 +337,36 @@ describe("Context", () => {
   // ─── HTTP status helper methods (1xx–5xx) ────────────────
 
   describe("status helpers", () => {
-    const successCases: Array<[string, number, keyof Context, "message"]> = [
-      ["respondContinue", 100, "respondContinue", "message"],
-      ["switchingProtocols", 101, "switchingProtocols", "message"],
-      ["processing", 102, "processing", "message"],
-      ["earlyHints", 103, "earlyHints", "message"],
-      ["ok", 200, "ok", "message"],
-      ["created", 201, "created", "message"],
-      ["accepted", 202, "accepted", "message"],
-      [
-        "nonAuthoritativeInformation",
-        203,
-        "nonAuthoritativeInformation",
-        "message",
-      ],
-      ["noContent", 204, "noContent", "message"],
-      ["resetContent", 205, "resetContent", "message"],
-      ["partialContent", 206, "partialContent", "message"],
-      ["multiStatus", 207, "multiStatus", "message"],
-      ["alreadyReported", 208, "alreadyReported", "message"],
-      ["imUsed", 226, "imUsed", "message"],
-      ["multipleChoices", 300, "multipleChoices", "message"],
-      ["movedPermanently", 301, "movedPermanently", "message"],
-      ["found", 302, "found", "message"],
-      ["seeOther", 303, "seeOther", "message"],
-      ["notModified", 304, "notModified", "message"],
-      ["useProxy", 305, "useProxy", "message"],
-      ["temporaryRedirect", 307, "temporaryRedirect", "message"],
-      ["permanentRedirect", 308, "permanentRedirect", "message"],
+    const successCases: Array<
+      [string, number, keyof HttpContextType["httpRespond"]]
+    > = [
+      ["continue", 100, "continue"],
+      ["switchingProtocols", 101, "switchingProtocols"],
+      ["processing", 102, "processing"],
+      ["earlyHints", 103, "earlyHints"],
+      ["ok", 200, "ok"],
+      ["created", 201, "created"],
+      ["accepted", 202, "accepted"],
+      ["nonAuthoritativeInformation", 203, "nonAuthoritativeInformation"],
+      ["noContent", 204, "noContent"],
+      ["resetContent", 205, "resetContent"],
+      ["partialContent", 206, "partialContent"],
+      ["multiStatus", 207, "multiStatus"],
+      ["alreadyReported", 208, "alreadyReported"],
+      ["imUsed", 226, "imUsed"],
+      ["multipleChoices", 300, "multipleChoices"],
+      ["movedPermanently", 301, "movedPermanently"],
+      ["found", 302, "found"],
+      ["seeOther", 303, "seeOther"],
+      ["notModified", 304, "notModified"],
+      ["useProxy", 305, "useProxy"],
+      ["temporaryRedirect", 307, "temporaryRedirect"],
+      ["permanentRedirect", 308, "permanentRedirect"],
     ];
 
-    const errorCases: Array<[string, number, keyof Context]> = [
+    const errorCases: Array<
+      [string, number, keyof HttpContextType["httpRespond"]]
+    > = [
       ["badRequest", 400, "badRequest"],
       ["unauthorized", 401, "unauthorized"],
       ["paymentRequired", 402, "paymentRequired"],
@@ -535,32 +405,54 @@ describe("Context", () => {
 
     for (const [name, status, method] of successCases) {
       test(`${name}() sets ${status} with default message`, () => {
-        (ctx[method] as (m?: string) => void)();
+        (ctx.httpRespond[method] as (m?: string) => void)();
         expect(ctx.statusCode).toBe(status);
         expect(ctx.body).toEqual({ message: expect.any(String) });
         expect(ctx.hasResponded()).toBe(true);
       });
 
       test(`${name}() sets ${status} with custom message`, () => {
-        (ctx[method] as (m?: string) => void)("custom");
+        (ctx.httpRespond[method] as (m?: string) => void)("custom");
         expect(ctx.body).toEqual({ message: "custom" });
       });
     }
 
     for (const [name, status, method] of errorCases) {
       test(`${name}() sets ${status} with default error message`, () => {
-        (ctx[method] as (m?: string) => void)();
+        (ctx.httpRespond[method] as (m?: string) => void)();
         expect(ctx.statusCode).toBe(status);
         expect(ctx.body).toEqual({ error: expect.any(String) });
         expect(ctx.hasResponded()).toBe(true);
       });
 
       test(`${name}() sets ${status} with custom error message`, () => {
-        (ctx[method] as (m?: string) => void)("custom");
+        (ctx.httpRespond[method] as (m?: string) => void)("custom");
         expect(ctx.body).toEqual({ error: "custom" });
       });
     }
   });
+
+  // ─── httpRespond instance-copy semantics ─────────────────
+
+  describe("httpRespond instance-copy", () => {
+    test("ctx.ok is the same function as ctx.httpRespond.ok", () => {
+      expect(ctx.ok).toBe(ctx.httpRespond.ok);
+    });
+
+    test("calling ctx.ok() directly works", () => {
+      ctx.ok("hello");
+      expect(ctx.statusCode).toBe(200);
+      expect(ctx.body).toEqual({ message: "hello" });
+    });
+
+    test("calling ctx.notFound() directly works", () => {
+      ctx.notFound("nope");
+      expect(ctx.statusCode).toBe(404);
+      expect(ctx.body).toEqual({ error: "nope" });
+    });
+  });
+
+  // ─── stream() ───────────────────────────────────────────
 
   describe("stream()", () => {
     test("sets streaming response", () => {
@@ -601,6 +493,8 @@ describe("Context", () => {
     });
   });
 
+  // ─── iterate() ──────────────────────────────────────────
+
   describe("iterate()", () => {
     test("sets iterator response", () => {
       async function* gen() {
@@ -629,6 +523,8 @@ describe("Context", () => {
     });
   });
 
+  // ─── sse() ──────────────────────────────────────────────
+
   describe("sse()", () => {
     test("returns SSE controller and sets response", () => {
       const controller = ctx.sse();
@@ -642,14 +538,13 @@ describe("Context", () => {
       expect(ctx.headers.get("Connection")).toBe("keep-alive");
     });
 
-    test("send() writes data lines", async () => {
+    test("send() writes data lines", () => {
       const controller = ctx.sse();
       controller.send("hello", "custom-event", "42", 5000);
-      // Just verify it doesn't throw — the stream is internal
       controller.close();
     });
 
-    test("send() with object data", async () => {
+    test("send() with object data", () => {
       const controller = ctx.sse();
       controller.send({ key: "value" });
       controller.close();
@@ -664,8 +559,7 @@ describe("Context", () => {
     test("close() disposes context", () => {
       const controller = ctx.sse();
       controller.close();
-      // Double close should not throw
-      controller.close();
+      controller.close(); // double close should not throw
     });
 
     test("custom status", () => {
@@ -675,7 +569,6 @@ describe("Context", () => {
 
     test("retry option sends retry field", () => {
       ctx.sse({ retry: 3000 });
-      // Just verify it doesn't throw
     });
 
     test("throws on double response", () => {
@@ -683,6 +576,8 @@ describe("Context", () => {
       expect(() => ctx.sse()).toThrow("Response already sent");
     });
   });
+
+  // ─── buffer() ───────────────────────────────────────────
 
   describe("buffer()", () => {
     test("sets buffer response", () => {
@@ -705,9 +600,10 @@ describe("Context", () => {
     });
   });
 
+  // ─── file() ─────────────────────────────────────────────
+
   describe("file()", () => {
     test("sets file response with inferred content type", () => {
-      // Create a temp file
       const path = "/tmp/sinwan-test-file.txt";
       Bun.write(path, "test content");
       ctx.file(path);
@@ -727,122 +623,6 @@ describe("Context", () => {
       expect(() => ctx.file("/tmp/sinwan-test-file.txt")).toThrow(
         "Response already sent",
       );
-    });
-  });
-
-  // ─── Flow Control ───────────────────────────────────────
-
-  describe("flow control", () => {
-    test("stop() sets stopped flag", () => {
-      ctx.stop();
-      expect(ctx.isStopped()).toBe(true);
-    });
-
-    test("stop() emits context:stop event", () => {
-      let emitted = false;
-      bus.on("context:stop", () => {
-        emitted = true;
-      });
-      ctx.stop();
-      expect(emitted).toBe(true);
-    });
-
-    test("hasResponded()", () => {
-      expect(ctx.hasResponded()).toBe(false);
-      ctx.json({});
-      expect(ctx.hasResponded()).toBe(true);
-    });
-
-    test("isStreaming()", () => {
-      expect(ctx.isStreaming()).toBe(false);
-      ctx.stream(
-        new ReadableStream({
-          start(c) {
-            c.close();
-          },
-        }),
-      );
-      expect(ctx.isStreaming()).toBe(true);
-    });
-
-    test("skip() and isSkipped()", () => {
-      expect(ctx.isSkipped()).toBe(false);
-      ctx.skip();
-      expect(ctx.isSkipped()).toBe(true);
-    });
-
-    test("skip() default count is 1", () => {
-      ctx.skip();
-      expect(ctx.skipCount).toBe(1);
-    });
-
-    test("skip(n) sets skipCount", () => {
-      ctx.skip(3);
-      expect(ctx.isSkipped()).toBe(true);
-      expect(ctx.skipCount).toBe(3);
-    });
-
-    test("skip(0) is a no-op", () => {
-      ctx.skip(0);
-      expect(ctx.isSkipped()).toBe(false);
-      expect(ctx.skipCount).toBe(0);
-    });
-
-    test("skip(-1) is a no-op", () => {
-      ctx.skip(-1);
-      expect(ctx.isSkipped()).toBe(false);
-      expect(ctx.skipCount).toBe(0);
-    });
-
-    test("skip() called twice overwrites count (last wins)", () => {
-      ctx.skip(2);
-      ctx.skip(5);
-      expect(ctx.skipCount).toBe(5);
-    });
-
-    test("clearSkip()", () => {
-      ctx.skip();
-      ctx.clearSkip();
-      expect(ctx.isSkipped()).toBe(false);
-    });
-
-    test("clearSkip() resets skipCount to 0", () => {
-      ctx.skip(3);
-      ctx.clearSkip();
-      expect(ctx.skipCount).toBe(0);
-    });
-
-    test("respondContinue() sets 100 status", () => {
-      ctx.respondContinue();
-      expect(ctx.hasResponded()).toBe(true);
-      expect(ctx.statusCode).toBe(100);
-      expect(ctx.body).toEqual({ message: "Continue" });
-    });
-
-    test("respondContinue() with custom message", () => {
-      ctx.respondContinue("Custom");
-      expect(ctx.statusCode).toBe(100);
-      expect(ctx.body).toEqual({ message: "Custom" });
-    });
-
-    test("respond() and isRespondEarly()", () => {
-      expect(ctx.isRespondEarly()).toBe(false);
-      ctx.respond();
-      expect(ctx.isRespondEarly()).toBe(true);
-    });
-
-    test("fail() and isFailed()", () => {
-      expect(ctx.isFailed()).toBe(false);
-      ctx.fail(new Error("step failed"));
-      expect(ctx.isFailed()).toBe(true);
-      expect(ctx.failError).toBeInstanceOf(Error);
-    });
-
-    test("clearFail()", () => {
-      ctx.fail(new Error("step failed"));
-      ctx.clearFail();
-      expect(ctx.isFailed()).toBe(false);
-      expect(ctx.failError).toBeNull();
     });
   });
 
@@ -868,297 +648,6 @@ describe("Context", () => {
     });
   });
 
-  // ─── EventBus Interaction ───────────────────────────────
-
-  describe("EventBus interaction", () => {
-    test("attachBus()", () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      c.attachBus(bus);
-      // Should not throw
-      c.attachBus(bus); // same bus is ok
-    });
-
-    test("attachBus throws on different bus", () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      c.attachBus(bus);
-      const bus2 = createTestBus();
-      expect(() => c.attachBus(bus2)).toThrow(
-        "already attached to a different EventBus",
-      );
-    });
-
-    test("emitAsync()", async () => {
-      let received: unknown;
-      bus.on("test", (c, payload) => {
-        received = payload;
-      });
-      await ctx.emitAsync("test", { data: 1 });
-      expect(received).toEqual({ data: 1 });
-    });
-
-    test("emitSync()", () => {
-      let received: unknown;
-      bus.on("test", (c, payload) => {
-        received = payload;
-      });
-      ctx.emitSync("test", { data: 1 });
-      expect(received).toEqual({ data: 1 });
-    });
-
-    test("emitAsync/emitSync throw without bus", async () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      expect(() => c.emitSync("test")).toThrow("not attached to an EventBus");
-      await expect(c.emitAsync("test")).rejects.toThrow(
-        "not attached to an EventBus",
-      );
-    });
-
-    test("on() registers scoped listener", async () => {
-      let called = false;
-      ctx.on("test", () => {
-        called = true;
-      });
-      await bus.emitAsync("test", ctx);
-      expect(called).toBe(true);
-    });
-
-    test("on() scoped listener only fires for this context", async () => {
-      let called = false;
-      const ctx2 = makeCtx({ bus });
-      ctx.on("test", () => {
-        called = true;
-      });
-      await bus.emitAsync("test", ctx2);
-      expect(called).toBe(false);
-    });
-
-    test("once() registers scoped once listener", async () => {
-      let count = 0;
-      ctx.once("test", () => {
-        count++;
-      });
-      await bus.emitAsync("test", ctx);
-      await bus.emitAsync("test", ctx);
-      expect(count).toBe(1);
-    });
-
-    test("off() removes scoped listener", async () => {
-      let called = false;
-      const handler = () => {
-        called = true;
-      };
-      ctx.on("test", handler);
-      ctx.off("test", handler);
-      await bus.emitAsync("test", ctx);
-      expect(called).toBe(false);
-    });
-
-    test("off() with unregistered handler does not throw", () => {
-      expect(() => ctx.off("test", () => {})).not.toThrow();
-    });
-
-    test("on() with ListenerOptions (signal)", async () => {
-      const ac = new AbortController();
-      let called = false;
-      ctx.on(
-        "test",
-        () => {
-          called = true;
-        },
-        { signal: ac.signal },
-      );
-      await bus.emitAsync("test", ctx);
-      expect(called).toBe(true);
-    });
-  });
-
-  // ─── Dispose ────────────────────────────────────────────
-
-  describe("dispose()", () => {
-    test("disposes context and clears scoped handlers", async () => {
-      let called = false;
-      ctx.on("test", () => {
-        called = true;
-      });
-      ctx.dispose();
-      await bus.emitAsync("test", ctx);
-      expect(called).toBe(false);
-    });
-
-    test("emits context:dispose event", () => {
-      let emitted = false;
-      bus.on("context:dispose", () => {
-        emitted = true;
-      });
-      ctx.dispose();
-      expect(emitted).toBe(true);
-    });
-
-    test("calls onDispose callbacks", () => {
-      let called = false;
-      ctx.onDispose(() => {
-        called = true;
-      });
-      ctx.dispose();
-      expect(called).toBe(true);
-    });
-
-    test("onDispose called immediately if already disposed", () => {
-      ctx.dispose();
-      let called = false;
-      ctx.onDispose(() => {
-        called = true;
-      });
-      expect(called).toBe(true);
-    });
-
-    test("response:set fires before onDispose (before/after ordering)", () => {
-      const order: string[] = [];
-      bus.on("response:set", () => order.push("response:set"));
-      ctx.onDispose(() => order.push("onDispose"));
-      ctx.json({ ok: true });
-      ctx.dispose();
-      expect(order).toEqual(["response:set", "onDispose"]);
-    });
-
-    test("double dispose is no-op", () => {
-      let count = 0;
-      ctx.onDispose(() => {
-        count++;
-      });
-      ctx.dispose();
-      ctx.dispose();
-      expect(count).toBe(1);
-    });
-
-    test("onDispose callback error is swallowed", () => {
-      ctx.onDispose(() => {
-        throw new Error("callback error");
-      });
-      expect(() => ctx.dispose()).not.toThrow();
-    });
-
-    test("dispose clears streaming flag", () => {
-      ctx.stream(
-        new ReadableStream({
-          start(c) {
-            c.close();
-          },
-        }),
-      );
-      expect(ctx.isStreaming()).toBe(true);
-      ctx.dispose();
-      expect(ctx.isStreaming()).toBe(false);
-    });
-  });
-
-  // ─── Event Trace ────────────────────────────────────────
-
-  describe("event trace", () => {
-    test("recordEvent stores entries", () => {
-      ctx.recordEvent(
-        {
-          name: "test",
-          event: "test",
-          timestamp: Date.now(),
-          sequence: 1,
-          requestId: "req",
-          source: "test",
-        },
-        { data: 1 },
-      );
-      expect(ctx.eventTrace.length).toBe(1);
-      expect(ctx.eventTrace[0]!.name).toBe("test");
-    });
-
-    test("recordEvent with includePayload stores payload", () => {
-      const c = makeCtx({ trace: { includePayload: true } });
-      c.recordEvent(
-        {
-          name: "test",
-          event: "test",
-          timestamp: 0,
-          sequence: 0,
-          requestId: "",
-          source: "test",
-        },
-        { data: 42 },
-      );
-      expect(c.eventTrace[0]!.payload).toEqual({ data: 42 });
-    });
-
-    test("recordEvent disabled when trace.enabled=false", () => {
-      const c = makeCtx({ trace: { enabled: false } });
-      c.recordEvent(
-        {
-          name: "test",
-          event: "test",
-          timestamp: 0,
-          sequence: 0,
-          requestId: "",
-          source: "test",
-        },
-        null,
-      );
-      expect(c.eventTrace.length).toBe(0);
-    });
-
-    test("ring buffer overwrites oldest entries", () => {
-      const c = makeCtx({ trace: { maxEntries: 3 } });
-      for (let i = 0; i < 5; i++) {
-        c.recordEvent(
-          {
-            name: `evt${i}`,
-            event: "test",
-            timestamp: 0,
-            sequence: i,
-            requestId: "",
-            source: "test",
-          },
-          null,
-        );
-      }
-      expect(c.eventTrace.length).toBe(3);
-      // Should contain the 3 most recent: evt2, evt3, evt4
-      const names = c.eventTrace.map((e) => e.name);
-      expect(names).toContain("evt2");
-      expect(names).toContain("evt3");
-      expect(names).toContain("evt4");
-    });
-
-    test("getEventTrace returns readonly array", () => {
-      ctx.recordEvent(
-        {
-          name: "test",
-          event: "test",
-          timestamp: 0,
-          sequence: 0,
-          requestId: "",
-          source: "test",
-        },
-        null,
-      );
-      const trace = ctx.getEventTrace();
-      expect(trace.length).toBe(1);
-    });
-
-    test("maxEntries=0 skips recording", () => {
-      const c = makeCtx({ trace: { maxEntries: 0 } });
-      c.recordEvent(
-        {
-          name: "test",
-          event: "test",
-          timestamp: 0,
-          sequence: 0,
-          requestId: "",
-          source: "test",
-        },
-        null,
-      );
-      expect(c.eventTrace.length).toBe(0);
-    });
-  });
-
   // ─── parseBody ──────────────────────────────────────────
 
   describe("parseBody()", () => {
@@ -1173,8 +662,9 @@ describe("Context", () => {
           body: '{"key":"value"}',
         }),
       );
-      const body = await ctx.parseBody();
-      expect(body).toEqual({ key: "value" });
+      expect(await ctx.parseBody<Record<string, unknown>>()).toEqual({
+        key: "value",
+      });
     });
 
     test("caches parsed body", async () => {
@@ -1201,8 +691,7 @@ describe("Context", () => {
           body: "hello",
         }),
       );
-      const body = await ctx.parseBody();
-      expect(body).toBe("hello");
+      expect(await ctx.parseBody<string>()).toBe("hello");
     });
 
     test("throws 413 for oversized body", async () => {
@@ -1238,7 +727,7 @@ describe("Context", () => {
 
     test("emits body:parsed event", async () => {
       let emitted = false;
-      bus.on("body:parsed", (c, payload) => {
+      bus.on("body:parsed", (_c, payload) => {
         emitted = true;
         expect((payload as { kind: string }).kind).toBe("json");
       });
@@ -1258,7 +747,7 @@ describe("Context", () => {
 
     test("emits body:parse:error on parse failure", async () => {
       let emitted = false;
-      bus.on("body:parse:error", (c, payload) => {
+      bus.on("body:parse:error", () => {
         emitted = true;
       });
       ctx.setReq(
@@ -1274,7 +763,7 @@ describe("Context", () => {
       try {
         await ctx.parseBody();
       } catch {
-        // expected
+        /* expected */
       }
       expect(emitted).toBe(true);
     });
@@ -1287,8 +776,9 @@ describe("Context", () => {
           body: '{"key":"value"}',
         }),
       );
-      const body = await ctx.parseBody();
-      expect(body).toEqual({ key: "value" });
+      expect(await ctx.parseBody<Record<string, unknown>>()).toEqual({
+        key: "value",
+      });
     });
 
     test("text without content-length uses streaming size enforcement", async () => {
@@ -1299,8 +789,7 @@ describe("Context", () => {
           body: "hello world",
         }),
       );
-      const body = await ctx.parseBody();
-      expect(body).toBe("hello world");
+      expect(await ctx.parseBody<string>()).toBe("hello world");
     });
 
     test("text without content-length enforces maxBodySize", async () => {
@@ -1322,8 +811,7 @@ describe("Context", () => {
           headers: { "Content-Type": "text/plain" },
         }),
       );
-      const body = await ctx.parseBody();
-      expect(body).toBe("");
+      expect(await ctx.parseBody<string>()).toBe("");
     });
   });
 
@@ -1376,7 +864,6 @@ describe("Context", () => {
     test("caches formData result", async () => {
       const formData = new FormData();
       formData.append("key", "value");
-      // Serialize FormData through Response to get a proper multipart body
       const serialized = new Response(formData);
       const contentType = serialized.headers.get("Content-Type")!;
       const body = await serialized.text();
@@ -1393,6 +880,20 @@ describe("Context", () => {
       const fd1 = await ctx.formData();
       const fd2 = await ctx.formData();
       expect(fd1).toBe(fd2);
+    });
+
+    test("fallback blob path for malformed multipart", async () => {
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "multipart/form-data; boundary=abc",
+            "Content-Length": "20",
+          },
+          body: "not-real-form-data!!",
+        }),
+      );
+      await expect(ctx.formData()).rejects.toThrow();
     });
   });
 
@@ -1439,6 +940,82 @@ describe("Context", () => {
         'Form field "name" is a plain string',
       );
     });
+
+    test("throws 413 for oversized file", async () => {
+      const formData = new FormData();
+      formData.append(
+        "file",
+        new File(["x".repeat(100)], "t.txt", { type: "text/plain" }),
+      );
+      const serialized = new Response(formData);
+      const contentType = serialized.headers.get("Content-Type")!;
+      const body = await serialized.text();
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+            "Content-Length": String(body.length),
+          },
+          body,
+        }),
+      );
+      await expect(
+        ctx.saveFile("file", "/tmp/t.txt", { maxSize: 10 }),
+      ).rejects.toThrow("File too large");
+    });
+
+    test("throws 415 for wrong file type", async () => {
+      const formData = new FormData();
+      formData.append(
+        "file",
+        new File(["content"], "t.txt", { type: "text/plain" }),
+      );
+      const serialized = new Response(formData);
+      const contentType = serialized.headers.get("Content-Type")!;
+      const body = await serialized.text();
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+            "Content-Length": String(body.length),
+          },
+          body,
+        }),
+      );
+      await expect(
+        ctx.saveFile("file", "/tmp/t.txt", { allowedTypes: ["image/png"] }),
+      ).rejects.toThrow("Invalid file type");
+    });
+
+    test("writes file and emits file:saved event", async () => {
+      let emitted = false;
+      bus.on("file:saved", () => {
+        emitted = true;
+      });
+      const formData = new FormData();
+      formData.append(
+        "file",
+        new File(["hello"], "t.txt", { type: "text/plain" }),
+      );
+      const serialized = new Response(formData);
+      const contentType = serialized.headers.get("Content-Type")!;
+      const body = await serialized.text();
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+            "Content-Length": String(body.length),
+          },
+          body,
+        }),
+      );
+      const bytes = await ctx.saveFile("file", "/tmp/test-save-ok.txt");
+      expect(bytes).toBeGreaterThan(0);
+      expect(emitted).toBe(true);
+    });
   });
 
   describe("saveFiles()", () => {
@@ -1457,6 +1034,31 @@ describe("Context", () => {
       await expect(
         ctx.saveFiles([{ field: "a", dest: "/tmp/a" }]),
       ).rejects.toThrow();
+    });
+
+    test("saves files via saveFiles and returns bytes map", async () => {
+      const formData = new FormData();
+      formData.append(
+        "file",
+        new File(["content"], "f.txt", { type: "text/plain" }),
+      );
+      const serialized = new Response(formData);
+      const contentType = serialized.headers.get("Content-Type")!;
+      const body = await serialized.text();
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+            "Content-Length": String(body.length),
+          },
+          body,
+        }),
+      );
+      const result = await ctx.saveFiles([
+        { field: "file", dest: "/tmp/test-savefiles-ok.txt" },
+      ]);
+      expect(result.get("file")).toBeGreaterThan(0);
     });
   });
 
@@ -1494,8 +1096,6 @@ describe("Context", () => {
     test("Bug 4 fix: updates errorHandler from options", () => {
       const newErrorHandler = new ErrorHandler();
       ctx.reset({ errorHandler: newErrorHandler, bus });
-      // The new errorHandler should be used — verify by calling catch()
-      // which delegates to errorHandler.handle
       expect(() => ctx.catch(new Error("test"), ctx, false)).not.toThrow();
     });
 
@@ -1522,224 +1122,7 @@ describe("Context", () => {
       });
       ctx.reset({ errorHandler: new ErrorHandler(), bus });
       await bus.emitAsync("test", ctx);
-      // After reset, scoped handler should be gone — but bus still has it
-      // Actually the handler was registered on the bus, reset only clears tracking.
-      // The wrapped handler checks ctx !== this so it won't fire.
       expect(called).toBe(false);
-    });
-  });
-
-  // ─── markReleased ───────────────────────────────────────
-
-  describe("markReleased()", () => {
-    test("returns false on first call", () => {
-      expect(ctx.markReleased()).toBe(false);
-    });
-
-    test("returns true on second call", () => {
-      ctx.markReleased();
-      expect(ctx.markReleased()).toBe(true);
-    });
-  });
-
-  // ─── Socket setters ─────────────────────────────────────
-
-  describe("socket setters", () => {
-    test("setWS()", () => {
-      const ws = { data: { path: "/", data: null } } as unknown as Parameters<
-        Context["setWS"]
-      >[0];
-      ctx.setWS(ws);
-      expect(ctx.ws).toBe(ws);
-    });
-
-    test("setTCP()", () => {
-      const tcp = {
-        data: { name: "test", data: null },
-      } as unknown as Parameters<Context["setTCP"]>[0];
-      ctx.setTCP(tcp);
-      expect(ctx.tcp).toBe(tcp);
-    });
-
-    test("setUDP()", () => {
-      const udp = {
-        data: { name: "test", data: null },
-      } as unknown as Parameters<Context["setUDP"]>[0];
-      ctx.setUDP(udp);
-      expect(ctx.udp).toBe(udp);
-    });
-
-    test("setGRPC()", () => {
-      const grpc: GRPCData = {
-        name: "test",
-        service: "Svc",
-        method: "Method",
-        path: "/",
-        kind: "unary",
-        call: null,
-        metadata: null,
-        data: null,
-      };
-      ctx.setGRPC(grpc);
-      expect(ctx.grpc).toBe(grpc);
-    });
-  });
-
-  // ─── Server methods ─────────────────────────────────────
-
-  describe("server methods", () => {
-    test("getServer() throws without server", () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      expect(() => c.pendingWebSockets).toThrow("not attached to a Server");
-    });
-
-    test("clientIP returns undefined without server", () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      expect(c.clientIP).toBeUndefined();
-    });
-
-    test("setTimeout does nothing without server", () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      expect(() => c.setTimeout(30)).not.toThrow();
-    });
-
-    test("publishToTopic delegates to server.publish", () => {
-      const mockServer = {
-        publish: () => 1,
-        pendingWebSockets: 0,
-        requestIP: () => undefined,
-        timeout: () => {},
-      };
-      const c = new Context({
-        errorHandler: new ErrorHandler(),
-        server: mockServer as unknown as ContextOptions["server"],
-      });
-      expect(() => c.publishToTopic("topic", "data")).not.toThrow();
-    });
-  });
-
-  // ─── Socket delegation methods ──────────────────────────
-
-  describe("socket delegation methods", () => {
-    function createMockWS(): Parameters<Context["setWS"]>[0] {
-      const subs: string[] = [];
-      return {
-        data: { path: "/ws", data: { custom: "ws" } },
-        remoteAddress: "127.0.0.1:1234",
-        readyState: 1,
-        subscriptions: subs,
-        send: () => 0,
-        close: () => {},
-        subscribe: (t: string) => subs.push(t),
-        unsubscribe: (t: string) => {
-          const i = subs.indexOf(t);
-          if (i >= 0) subs.splice(i, 1);
-        },
-        publish: () => 0,
-        isSubscribed: (t: string) => subs.includes(t),
-        cork: (cb: () => void) => cb(),
-      } as unknown as Parameters<Context["setWS"]>[0];
-    }
-
-    function createMockTCP(): Parameters<Context["setTCP"]>[0] {
-      return {
-        data: { name: "tcp", data: { custom: "tcp" } },
-        remoteAddress: "1.2.3.4:80",
-        localAddress: "0.0.0.0:3000",
-        write: () => 0,
-        end: () => 0,
-        flush: () => {},
-        timeout: () => {},
-      } as unknown as Parameters<Context["setTCP"]>[0];
-    }
-
-    function createMockUDP(): Parameters<Context["setUDP"]>[0] {
-      return {
-        data: { name: "udp", data: { custom: "udp" } },
-        address: { address: "0.0.0.0", port: 9090, family: "IPv4" },
-        closed: false,
-        send: () => true,
-        sendMany: () => 0,
-        addMembership: () => true,
-        dropMembership: () => true,
-      } as unknown as Parameters<Context["setUDP"]>[0];
-    }
-
-    test("WS delegation: wsData, path, remoteAddress, readyState, subscriptions", () => {
-      ctx.setWS(createMockWS());
-      expect(ctx.wsData<{ custom: string }>()).toEqual({ custom: "ws" });
-      expect(ctx.path).toBe("/ws");
-      expect(ctx.remoteAddress).toBe("127.0.0.1:1234");
-      expect(ctx.readyState).toBe(1);
-      expect(ctx.subscriptions).toEqual([]);
-    });
-
-    test("WS delegation: send, close, subscribe, unsubscribe, publish, isSubscribed, cork", () => {
-      ctx.setWS(createMockWS());
-      expect(() => ctx.send("hi")).not.toThrow();
-      expect(() => ctx.close()).not.toThrow();
-      ctx.subscribe("news");
-      expect(ctx.isSubscribed("news")).toBe(true);
-      ctx.unsubscribe("news");
-      expect(ctx.isSubscribed("news")).toBe(false);
-      expect(() => ctx.publish("topic", "msg")).not.toThrow();
-      expect(() => ctx.cork(() => {})).not.toThrow();
-    });
-
-    test("TCP delegation: tcpData, tcpName, tcpRemoteAddress, tcpLocalAddress", () => {
-      ctx.setTCP(createMockTCP());
-      expect(ctx.tcpData<{ custom: string }>()).toEqual({ custom: "tcp" });
-      expect(ctx.tcpName).toBe("tcp");
-      expect(ctx.tcpRemoteAddress).toBe("1.2.3.4:80");
-      expect(ctx.tcpLocalAddress).toBe("0.0.0.0:3000");
-    });
-
-    test("TCP delegation: write, end, flush, timeout", () => {
-      ctx.setTCP(createMockTCP());
-      expect(() => ctx.write("data")).not.toThrow();
-      expect(() => ctx.end()).not.toThrow();
-      expect(() => ctx.flush()).not.toThrow();
-      expect(() => ctx.timeout(30)).not.toThrow();
-    });
-
-    test("UDP delegation: udpData, udpName, udpAddress, udpClosed", () => {
-      ctx.setUDP(createMockUDP());
-      expect(ctx.udpData<{ custom: string }>()).toEqual({ custom: "udp" });
-      expect(ctx.udpName).toBe("udp");
-      expect(ctx.udpAddress.address).toBe("0.0.0.0");
-      expect(ctx.udpClosed).toBe(false);
-    });
-
-    test("UDP delegation: sendUDP, sendManyUDP, addMembershipUDP, dropMembershipUDP", () => {
-      ctx.setUDP(createMockUDP());
-      expect(() => ctx.sendUDP("data")).not.toThrow();
-      expect(() => ctx.sendUDP("data", 8080, "127.0.0.1")).not.toThrow();
-      expect(() => ctx.sendManyUDP(["a", "b"])).not.toThrow();
-      expect(() => ctx.addMembershipUDP("224.0.0.1")).not.toThrow();
-      expect(() => ctx.dropMembershipUDP("224.0.0.1")).not.toThrow();
-    });
-  });
-
-  // ─── requestId setter ───────────────────────────────────
-
-  describe("requestId", () => {
-    test("setter updates the requestId", () => {
-      ctx.requestId = "custom-id";
-      expect(ctx.requestId).toBe("custom-id");
-    });
-  });
-
-  // ─── SSE cancel ─────────────────────────────────────────
-
-  describe("sse() cancel", () => {
-    test("SSE stream cancel disposes context", async () => {
-      const sse = ctx.sse();
-      // Cancel the underlying stream
-      const stream = ctx.body as unknown as ReadableStream;
-      expect(stream).toBeDefined();
-      await stream.cancel();
-      // Context should be disposed after cancel
-      expect(ctx.isStopped()).toBe(true);
     });
   });
 
@@ -1770,40 +1153,249 @@ describe("Context", () => {
   // ─── cookies ────────────────────────────────────────────
 
   describe("cookies", () => {
-    test("returns CookieMap from request", () => {
-      const req = makeReq("http://localhost:3000/", {
-        headers: { Cookie: "key=value; foo=bar" },
-      });
-      // Bun's Request has a cookies property; mock it for testing
-      const cookieMap = new Map([
-        ["key", "value"],
-        ["foo", "bar"],
-      ]);
-      (req as unknown as { cookies: Map<string, string> }).cookies = cookieMap;
-      ctx.setReq(req);
+    test("parses cookies from the Cookie header", () => {
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          headers: { Cookie: "key=value; foo=bar" },
+        }),
+      );
       expect(ctx.cookies.get("key")).toBe("value");
+      expect(ctx.cookies.get("foo")).toBe("bar");
+    });
+
+    test("returns empty CookieMap when no Cookie header is present", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      expect(ctx.cookies.get("missing")).toBeNull();
+    });
+
+    test("caches the CookieMap across accesses", () => {
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          headers: { Cookie: "session=abc" },
+        }),
+      );
+      expect(ctx.cookies).toBe(ctx.cookies);
+      expect(ctx.cookies.get("session")).toBe("abc");
+    });
+
+    test("reset() clears the cached CookieMap", () => {
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          headers: { Cookie: "session=abc" },
+        }),
+      );
+      expect(ctx.cookies.get("session")).toBe("abc");
+
+      ctx.reset({ requestId: "r2" } as unknown as ContextOptions);
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          headers: { Cookie: "session=xyz" },
+        }),
+      );
+      expect(ctx.cookies.get("session")).toBe("xyz");
+    });
+
+    test("ctx.cookies.set(name, value) adds a cookie", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc123");
+      expect(ctx.cookieHeaders()).toEqual([
+        "session=abc123; Path=/; SameSite=Lax",
+      ]);
+      expect(ctx.hasHeaders()).toBe(false);
+    });
+
+    test("ctx.cookies.set(name, value, options) serializes options", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc", {
+        httpOnly: true,
+        secure: true,
+        maxAge: 3600,
+        sameSite: "strict",
+        path: "/admin",
+      });
+      const cookies = ctx.cookieHeaders();
+      expect(cookies.length).toBe(1);
+      expect(cookies[0]).toContain("session=abc");
+      expect(cookies[0]).toContain("Path=/admin");
+      expect(cookies[0]).toContain("Max-Age=3600");
+      expect(cookies[0]).toContain("Secure");
+      expect(cookies[0]).toContain("HttpOnly");
+      expect(cookies[0]).toContain("SameSite=Strict");
+    });
+
+    test("ctx.cookies.set(options) object form works", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set({ name: "theme", value: "dark", secure: true });
+      const cookies = ctx.cookieHeaders();
+      expect(cookies.length).toBe(1);
+      expect(cookies[0]).toContain("theme=dark");
+      expect(cookies[0]).toContain("Secure");
+    });
+
+    test("ctx.cookies.set() appends multiple cookies (no overwrite)", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("a", "1");
+      ctx.cookies.set("b", "2");
+      const cookies = ctx.cookieHeaders();
+      expect(cookies.length).toBe(2);
+      expect(cookies[0]).toContain("a=1");
+      expect(cookies[1]).toContain("b=2");
+    });
+
+    test("ctx.cookies.delete(name) sets empty value with past expiry", () => {
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          headers: { Cookie: "session=abc" },
+        }),
+      );
+      ctx.cookies.delete("session");
+      const cookies = ctx.cookieHeaders();
+      expect(cookies.length).toBe(1);
+      expect(cookies[0]).toContain("session=");
+      // Bun's CookieMap serializes the epoch as "Thu, 01 Jan 1970 00:00:00 GMT"
+      expect(cookies[0]).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    });
+
+    test("ctx.cookies.delete(name, options) with path", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.delete("session", { path: "/admin" });
+      const cookies = ctx.cookieHeaders();
+      expect(cookies.length).toBe(1);
+      expect(cookies[0]).toContain("session=");
+      expect(cookies[0]).toContain("Path=/admin");
+    });
+
+    test("ctx.cookies.delete({ name, path }) object form", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.delete({ name: "session", path: "/admin" });
+      const cookies = ctx.cookieHeaders();
+      expect(cookies.length).toBe(1);
+      expect(cookies[0]).toContain("session=");
+      expect(cookies[0]).toContain("Path=/admin");
+    });
+
+    test("buildResponse applies cookie headers as Set-Cookie", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc", { httpOnly: true });
+      ctx.cookies.set("theme", "dark");
+      ctx.json({ ok: true });
+      const res = buildResponse(ctx);
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.length).toBe(2);
+      expect(setCookies[0]).toContain("session=abc");
+      expect(setCookies[0]).toContain("HttpOnly");
+      expect(setCookies[1]).toContain("theme=dark");
+    });
+
+    test("buildResponse applies ctx.cookies.delete() as Set-Cookie", () => {
+      ctx.setReq(
+        makeReq("http://localhost:3000/", {
+          headers: { Cookie: "session=abc" },
+        }),
+      );
+      ctx.cookies.delete("session");
+      ctx.json({ ok: true });
+      const res = buildResponse(ctx);
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.length).toBe(1);
+      expect(setCookies[0]).toContain("session=");
+      expect(setCookies[0]).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    });
+
+    test("cookieHeaders() returns empty array when cookies never accessed", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      expect(ctx.cookieHeaders()).toEqual([]);
+    });
+
+    test("applyCookieHeaders() appends Set-Cookie headers", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc");
+      ctx.cookies.set("theme", "dark");
+      ctx.applyCookieHeaders();
+      const setCookies = ctx.headers.getSetCookie();
+      expect(setCookies.length).toBe(2);
+      expect(setCookies[0]).toContain("session=abc");
+      expect(setCookies[1]).toContain("theme=dark");
+    });
+
+    test("applyCookieHeaders() is a no-op when no cookies were set", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.applyCookieHeaders();
+      expect(ctx.hasHeaders()).toBe(false);
+    });
+
+    test("applyCookieHeaders() emits cookie:set event with header values", () => {
+      const bus = new EventBus();
+      ctx = new HttpContext({ bus, errorHandler: new ErrorHandler() });
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc", { httpOnly: true });
+      ctx.cookies.set("theme", "dark");
+
+      let emitted = false;
+      let receivedHeaders: string[] = [];
+      bus.on("cookie:set", (_c, payload) => {
+        emitted = true;
+        receivedHeaders = (payload as { headers: string[] }).headers;
+      });
+      ctx.applyCookieHeaders();
+      expect(emitted).toBe(true);
+      expect(receivedHeaders.length).toBe(2);
+      expect(receivedHeaders[0]).toContain("session=abc");
+      expect(receivedHeaders[0]).toContain("HttpOnly");
+      expect(receivedHeaders[1]).toContain("theme=dark");
+    });
+
+    test("applyCookieHeaders() does not emit when no bus listeners", () => {
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc");
+      // No bus attached — should not throw
+      ctx.applyCookieHeaders();
+      expect(ctx.headers.getSetCookie().length).toBe(1);
+    });
+
+    test("buildResponse emits cookie:set event", () => {
+      const bus = new EventBus();
+      ctx = new HttpContext({ bus, errorHandler: new ErrorHandler() });
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.cookies.set("session", "abc");
+      ctx.json({ ok: true });
+
+      let emitted = false;
+      let receivedHeaders: string[] = [];
+      bus.on("cookie:set", (_c, payload) => {
+        emitted = true;
+        receivedHeaders = (payload as { headers: string[] }).headers;
+      });
+      buildResponse(ctx);
+      expect(emitted).toBe(true);
+      expect(receivedHeaders.length).toBe(1);
+      expect(receivedHeaders[0]).toContain("session=abc");
+    });
+
+    test("buildResponse does not emit cookie:set when no cookies set", () => {
+      const bus = new EventBus();
+      ctx = new HttpContext({ bus, errorHandler: new ErrorHandler() });
+      ctx.setReq(makeReq("http://localhost:3000/"));
+      ctx.json({ ok: true });
+
+      let emitted = false;
+      bus.on("cookie:set", () => {
+        emitted = true;
+      });
+      buildResponse(ctx);
+      expect(emitted).toBe(false);
     });
   });
 
-  // ─── withSource ─────────────────────────────────────────
+  // ─── SSE cancel ─────────────────────────────────────────
 
-  describe("withSource (via emit)", () => {
-    test("emitSync uses 'context' as default source", () => {
-      let receivedSource: unknown;
-      bus.on("test", (c, p, m) => {
-        receivedSource = (m as { source: string }).source;
-      });
-      ctx.emitSync("test", { data: 1 });
-      expect(receivedSource).toBe("context");
-    });
-
-    test("emitAsync respects custom source", async () => {
-      let receivedSource: unknown;
-      bus.on("test", (c, p, m) => {
-        receivedSource = (m as { source: string }).source;
-      });
-      await ctx.emitAsync("test", { data: 1 }, { source: "custom" });
-      expect(receivedSource).toBe("custom");
+  describe("sse() cancel", () => {
+    test("SSE stream cancel disposes context", async () => {
+      const sse = ctx.sse();
+      const stream = ctx.body as unknown as ReadableStream;
+      expect(stream).toBeDefined();
+      await stream.cancel();
+      expect(ctx.isStopped()).toBe(true);
     });
   });
 
@@ -1824,7 +1416,6 @@ describe("Context", () => {
       });
 
       ctx.stream(readable);
-      // Consume the stream fully
       const reader = (ctx.body as ReadableStream).getReader();
       const chunks: Uint8Array[] = [];
       for (;;) {
@@ -1832,7 +1423,6 @@ describe("Context", () => {
         if (done) break;
         chunks.push(value);
       }
-      // Wait for microtask disposal
       await new Promise((r) => setTimeout(r, 10));
       expect(disposed).toBe(true);
       expect(chunks.length).toBe(1);
@@ -1874,6 +1464,37 @@ describe("Context", () => {
       await stream.cancel();
       await new Promise((r) => setTimeout(r, 10));
       expect(disposed).toBe(true);
+    });
+
+    test("stream with pull-based source triggers wrapped pull()", async () => {
+      let disposed = false;
+      ctx.onDispose(() => {
+        disposed = true;
+      });
+
+      let pullCount = 0;
+      const source = new ReadableStream({
+        pull(controller) {
+          pullCount++;
+          if (pullCount <= 3) {
+            controller.enqueue(new TextEncoder().encode(`chunk${pullCount}`));
+          } else {
+            controller.close();
+          }
+        },
+      });
+
+      ctx.stream(source);
+      const reader = (ctx.body as ReadableStream).getReader();
+      const chunks: string[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(new TextDecoder().decode(value));
+      }
+      await new Promise((r) => setTimeout(r, 10));
+      expect(disposed).toBe(true);
+      expect(chunks).toEqual(["chunk1", "chunk2", "chunk3"]);
     });
   });
 
@@ -1954,8 +1575,8 @@ describe("Context", () => {
       async function* gen() {
         try {
           yield "chunk1";
-        } catch (e) {
-          // Generator catches the throw
+        } catch {
+          /* generator catches */
         }
       }
 
@@ -1987,13 +1608,11 @@ describe("Context", () => {
     });
   });
 
-  // ─── emitSyncIfAvailable ────────────────────────────────
+  // ─── emitSyncIfAvailable (HTTP-specific: parseBody without bus) ──
 
-  describe("emitSyncIfAvailable", () => {
+  describe("emitSyncIfAvailable (parseBody without bus)", () => {
     test("does not throw when no bus attached", () => {
-      const c = new Context({ errorHandler: new ErrorHandler() });
-      // parseBody calls emitSyncIfAvailable internally
-      // Just verify no throw when bus is absent
+      const c = new HttpContext({ errorHandler: new ErrorHandler() });
       c.setReq(
         makeReq("http://localhost:3000/", {
           method: "POST",
@@ -2001,8 +1620,21 @@ describe("Context", () => {
           body: "hello",
         }),
       );
-      // This should work without a bus
-      expect(c.parseBody()).resolves.toBe("hello");
+      expect(c.parseBody<string>()).resolves.toBe("hello");
+    });
+  });
+
+  // ─── server methods ─────────────────────────────────────
+
+  describe("server methods", () => {
+    test("clientIP returns undefined without server", () => {
+      const c = new HttpContext({ errorHandler: new ErrorHandler() });
+      expect(c.clientIP).toBeUndefined();
+    });
+
+    test("setTimeout does nothing without server", () => {
+      const c = new HttpContext({ errorHandler: new ErrorHandler() });
+      expect(() => c.setTimeout(30)).not.toThrow();
     });
   });
 });

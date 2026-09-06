@@ -3,7 +3,7 @@ import { HTTPRouter, type RouteHandler } from "../../src/routers/http-router";
 import { Runtime, type RuntimeConfig } from "../../src/runtime";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
-import { Context } from "../../src/context/context";
+import { HttpContext } from "../../src/context/http-context";
 import type { Request } from "../../src/types";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
@@ -49,18 +49,17 @@ describe("HTTPRouter", () => {
       expect(router.name).toBe("sinwan:http-router");
     });
 
-    test("handle() skips non-HTTP contexts", async () => {
+    test("handle() directly resolves and runs chain", async () => {
       const router = new HTTPRouter();
-      router.get("/", (ctx) => ctx.json({ ok: true }));
-      const runtime = createRuntime();
-      // Create a context with tcp set — should skip router
-      const ctx = runtime.acquireContext();
-      ctx.setReq(createMockReq());
-      ctx.setTCP({} as never);
-      const result = router.handle(ctx);
+      router.get("/test", (ctx) => ctx.json({ ok: true }));
+      const bus = new EventBus();
+      const ctx = new HttpContext({ bus, errorHandler: new ErrorHandler() });
+      ctx.setReq(createMockReq("http://localhost/test"));
+      const result = router.handle(ctx, (err) => {
+        ctx.catch(err);
+      });
       if (result instanceof Promise) await result;
-      // Should not have responded (router was skipped)
-      expect(ctx.hasResponded()).toBe(false);
+      expect(ctx.hasResponded()).toBe(true);
     });
   });
 

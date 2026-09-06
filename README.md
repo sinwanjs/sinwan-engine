@@ -193,6 +193,53 @@ app.query("/search", async (ctx) => {
 
 `QUERY` is included in the default CORS `Access-Control-Allow-Methods` and is advertised in the RFC 9110 `Allow` header on `405 Method Not Allowed` responses. There is no `QUERY`→`GET` fallback (the spec defines none); use `app.all()` if you want a single handler to cover multiple methods.
 
+## Cookies
+
+Sinwan provides cookie support through `ctx.cookies` — Bun's native `CookieMap`. Read, write, and delete cookies all through the same API. The response builder collects all cookie mutations (`set`/`delete`) and applies them as `Set-Cookie` headers automatically, matching Bun's `routes` behavior.
+
+All `CookieInit` options (`httpOnly`, `secure`, `sameSite`, `maxAge`, `expires`, `domain`, `path`, `partitioned`) pass through to Bun's native serialization.
+
+```ts
+import { Sinwan } from "sinwan-engine";
+
+const app = await Sinwan.create();
+
+// Read incoming cookies
+app.get("/", (ctx) => {
+  const session = ctx.cookies.get("session"); // string | null
+  ctx.json({ session });
+});
+
+// Set a response cookie
+app.post("/login", async (ctx) => {
+  const { username } = await ctx.parseBody<{ username: string }>();
+  ctx.cookies.set("session", username, {
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: 60 * 60,
+    path: "/",
+  });
+  ctx.json({ ok: true });
+});
+
+// Set multiple cookies in one response
+app.post("/prefs", (ctx) => {
+  ctx.cookies.set("theme", "dark", { sameSite: "strict" });
+  ctx.cookies.set("lang", "en", { maxAge: 86400 });
+  ctx.json({ ok: true });
+});
+
+// Clear a cookie (pass the same path/domain used at creation)
+app.post("/logout", (ctx) => {
+  ctx.cookies.delete("session", { path: "/" });
+  ctx.json({ ok: true });
+});
+
+await app.listen(3000);
+```
+
+See `examples/http/cookies.ts` for a runnable example.
+
 ## Features
 
 - **Multi-protocol**: HTTP, WebSocket, TCP, UDP, and gRPC from one engine
@@ -202,6 +249,7 @@ app.query("/search", async (ctx) => {
 - **Lifecycle manager**: Five-phase lifecycle (`idle → init → ready → shutdown → destroyed`)
 - **Context pooling**: Reusable per-request context with state, global state, and response helpers
 - **Response helpers**: `json`, `text`, `html`, `redirect`, `stream`, `iterate`, `sse`, `buffer`, `file`
+- **Cookies**: Native cookie support via `ctx.cookies` (Bun `CookieMap`) — read, write, and delete
 - **Built-in CORS**: `cors` middleware with dynamic origin, credentials, and preflight handling
 - **Plugin system**: Encapsulate features as installable plugins
 - **Module system**: Group routes into reusable modules (`createHttpModule`, `createWSModule`, …)

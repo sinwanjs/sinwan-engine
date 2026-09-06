@@ -9,11 +9,13 @@
  *  - Upgrade interception runs before HTTP route resolution. If the upgrade hook
  *    calls ctx.json() / ctx.text(), the upgrade is rejected and a normal HTTP
  *    response is returned. Otherwise server.upgrade() is called and Bun handles 101.
- *  - WebSocket hooks use the same Context class as HTTP handlers.
+ *  - WebSocket hooks use the protocol-specific WsContext (pooled per-protocol
+ *    by the Runtime); the upgrade hook still runs on the HttpContext.
  */
 
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
-import type { Context, WSSData } from "../context/context";
+import type { WsContext, WSSData } from "../context/ws-context";
+import type { HttpContext } from "../context/http-context";
 import type { Runtime } from "../runtime";
 
 // ─── Public Types ──────────────────────────────────────────
@@ -32,28 +34,31 @@ export type Compressor =
   | "256KB";
 
 /** Handler called before upgrading — runs inside the normal HTTP pipeline. */
-export type WSUpgradeHandler = (ctx: Context) => Promise<void> | void;
+export type WSUpgradeHandler = (ctx: HttpContext) => Promise<void> | void;
 
 /** Handler called on WS lifecycle events. */
-export type WSHook = (ws: Context, ...args: unknown[]) => Promise<void> | void;
+export type WSHook = (
+  ws: WsContext,
+  ...args: unknown[]
+) => Promise<void> | void;
 
 export type WSMessageHook = (
-  ws: Context,
+  ws: WsContext,
   message: string | ArrayBuffer | Uint8Array,
 ) => Promise<void> | void;
 
 export type WSCloseHook = (
-  ws: Context,
+  ws: WsContext,
   code: number,
   reason: string,
 ) => Promise<void> | void;
 
 export type WSPingPongHook = (
-  ws: Context,
+  ws: WsContext,
   data: Buffer,
 ) => Promise<void> | void;
 
-export type WSErrorHook = (ws: Context, error: Error) => Promise<void> | void;
+export type WSErrorHook = (ws: WsContext, error: Error) => Promise<void> | void;
 
 /** Configuration object for a WebSocket route. */
 export interface WSRouteConfig {
@@ -273,10 +278,9 @@ export class WSRouter {
    *          upgrade hook is async.
    */
   tryUpgrade(
-    ctx: Context,
+    ctx: HttpContext,
     server: Server<unknown> | undefined,
   ): boolean | Promise<boolean> {
-    if (ctx.tcp || ctx.udp || ctx.grpc) return false;
     if (!server) return false;
 
     const pathname = this.extractPathname(ctx.req.url);
@@ -323,12 +327,12 @@ export class WSRouter {
     event: string,
     payload: unknown,
     config: WSRouteConfig | undefined,
-    hook: ((ctx: Context, ...args: A) => Promise<void> | void) | undefined,
+    hook: ((ctx: WsContext, ...args: A) => Promise<void> | void) | undefined,
     ...args: A
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
-    const ctx = runtime.acquireContext();
+    const ctx = runtime.acquireWsContext();
     ctx.setWS(ws);
     if (ws.data.state && config) {
       // Prevent arbitrary key injection — whitelist only allowed keys

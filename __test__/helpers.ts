@@ -1,4 +1,5 @@
-import { Context, type ContextOptions } from "../src/context/context";
+import { HttpContext } from "../src/context/http-context";
+import type { ContextOptions } from "../src/context/base-context";
 import { EventBus, type EventBusOptions } from "../src/event-bus";
 import { ErrorHandler, type ErrorHandlerOptions } from "../src/error-handler";
 
@@ -10,15 +11,15 @@ export function createTestBus(options?: EventBusOptions): EventBus {
 }
 
 /**
- * Create a real Context instance for testing.
- * The Context is backed by a real ErrorHandler and optionally a real EventBus.
+ * Create a real HttpContext instance for testing.
+ * The HttpContext is backed by a real ErrorHandler and optionally a real EventBus.
  */
 export function createTestContext(
   bus?: EventBus,
   overrides?: Partial<ContextOptions>,
-): Context {
+): HttpContext {
   const errorHandler = new ErrorHandler();
-  return new Context({
+  return new HttpContext({
     bus,
     errorHandler,
     ...overrides,

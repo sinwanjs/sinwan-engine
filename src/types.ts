@@ -7,7 +7,12 @@
  */
 
 import type { BunRequest } from "bun";
-import type { Context } from "./context/context";
+import type { BaseContext } from "./context/base-context";
+
+/**
+ * Union of all protocol-specific context types (rooted at BaseContext).
+ */
+export type AnyContext = BaseContext;
 
 // ─── Lifecycle System ─────────────────────────────────────────
 
@@ -58,7 +63,7 @@ export interface ListenerOptions {
 }
 
 export type EventHandler<P = unknown> = (
-  ctx: Context,
+  ctx: AnyContext,
   payload?: P,
   meta?: EventMeta,
 ) => Promise<unknown> | unknown;
@@ -150,6 +155,7 @@ export interface InternalEventPayloads {
     contentType: string;
   };
   "header:set": { key: string; value: string };
+  "cookie:set": { headers: string[] };
   "body:parsed": { kind: "json" | "form" | "text" };
   "body:parse:error": { error: unknown };
   "context:stop": undefined;
@@ -184,7 +190,7 @@ export interface InternalEventPayloads {
 }
 
 export type InternalEventHandler<P> = (
-  ctx: Context,
+  ctx: AnyContext,
   payload: P,
   meta?: EventMeta,
 ) => Promise<unknown> | unknown;

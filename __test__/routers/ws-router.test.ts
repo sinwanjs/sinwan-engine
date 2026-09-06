@@ -8,8 +8,7 @@ import { Runtime, type RuntimeConfig } from "../../src/runtime";
 import { HTTPRouter } from "../../src/routers/http-router";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
-import { Context } from "../../src/context/context";
-import type { WSSData } from "../../src/context/context";
+import { WsContext, type WSSData } from "../../src/context/ws-context";
 import type { ServerWebSocket, Server } from "bun";
 import type { Request } from "../../src/types";
 
@@ -65,18 +64,6 @@ describe("WSRouter", () => {
     test("has correct name", () => {
       const router = new WSRouter();
       expect(router.name).toBe("sinwan:ws-router");
-    });
-
-    test("tryUpgrade skips non-HTTP contexts", async () => {
-      const router = new WSRouter();
-      router.ws("/ws", { open: () => {} });
-      const runtime = createRuntime();
-      const ctx = runtime.acquireContext();
-      ctx.setReq(createMockReq());
-      ctx.setTCP({} as never);
-      const result = router.tryUpgrade(ctx, undefined);
-      expect(result).toBe(false);
-      expect(ctx.hasResponded()).toBe(false);
     });
 
     test("tryUpgrade skips when no server", async () => {
@@ -194,6 +181,22 @@ describe("WSRouter", () => {
       handlers.open!(createMockWS());
       await flushPromises();
       expect(opened).toBe(true);
+    });
+
+    test("hooks receive a WsContext", async () => {
+      const router = new WSRouter();
+      let captured: unknown;
+      router.ws("/ws", {
+        open: (ctx) => {
+          captured = ctx;
+        },
+      });
+      const runtime = createRuntime();
+      const handlers = router.buildWebSocketHandlers(runtime)!;
+      handlers.open!(createMockWS());
+      await flushPromises();
+      expect(captured).toBeInstanceOf(WsContext);
+      expect((captured as WsContext).protocol).toBe("ws");
     });
 
     test("message hook is called with message", async () => {

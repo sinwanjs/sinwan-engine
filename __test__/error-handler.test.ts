@@ -7,7 +7,8 @@ import {
   type ErrorResponseType,
 } from "../src/error-handler";
 import { ErrorNormalizer, type ErrorHook } from "../src/error-normalizer";
-import { Context, type ContextOptions } from "../src/context/context";
+import { HttpContext } from "../src/context/http-context";
+import type { ContextOptions } from "../src/context/base-context";
 import { EventBus } from "../src/event-bus";
 import type { ErrorPayload } from "../src/types";
 
@@ -21,10 +22,10 @@ function setEnv(env: string | undefined): void {
   }
 }
 
-function createCtx(): Context {
+function createCtx(): HttpContext {
   const bus = new EventBus();
   const handler = new ErrorHandler();
-  return new Context({ bus, errorHandler: handler });
+  return new HttpContext({ bus, errorHandler: handler });
 }
 
 describe("ErrorHandler", () => {
@@ -306,7 +307,7 @@ describe("ErrorHandler", () => {
       setEnv("development");
       const ctx = createCtx();
       let receivedPayload: ErrorPayload | undefined;
-      let receivedCtx: Context | undefined;
+      let receivedCtx: HttpContext | undefined;
       const formatter: ErrorResponseFormatter = (payload, c) => {
         receivedPayload = payload;
         receivedCtx = c;
@@ -333,6 +334,58 @@ describe("ErrorHandler", () => {
       err.statusCode = 403;
       await handler.handle(err, ctx);
       expect(ctx.statusCode).toBe(403);
+    });
+
+    test("uses custom formatter with object body for JSON", async () => {
+      setEnv("development");
+      const ctx = createCtx();
+      const formatter: ErrorResponseFormatter = (payload) => ({
+        body: { customError: payload.message },
+        type: "json",
+      });
+      const handler = new ErrorHandler({ formatResponse: formatter });
+      await handler.handle(new Error("custom object"), ctx);
+      expect(ctx.body).toEqual({ customError: "custom object" });
+    });
+
+    test("omitted type defaults to configured responseType", async () => {
+      setEnv("development");
+      const ctx = createCtx();
+      const formatter: ErrorResponseFormatter = (payload) => ({
+        body: { defaulted: payload.message },
+      });
+      const handler = new ErrorHandler({
+        responseType: "json",
+        formatResponse: formatter,
+      });
+      await handler.handle(new Error("default type"), ctx);
+      expect(ctx.body).toEqual({ defaulted: "default type" });
+    });
+
+    test("omitted type defaults to html when configured", async () => {
+      setEnv("development");
+      const ctx = createCtx();
+      const formatter: ErrorResponseFormatter = (payload) => ({
+        body: `<p>${payload.message}</p>`,
+      });
+      const handler = new ErrorHandler({
+        responseType: "html",
+        formatResponse: formatter,
+      });
+      await handler.handle(new Error("default html"), ctx);
+      expect(ctx.body).toBe("<p>default html</p>");
+    });
+
+    test("coerces non-string body to HTML string", async () => {
+      setEnv("development");
+      const ctx = createCtx();
+      const formatter: ErrorResponseFormatter = (payload) => ({
+        body: { message: payload.message },
+        type: "html",
+      });
+      const handler = new ErrorHandler({ formatResponse: formatter });
+      await handler.handle(new Error("coerce test"), ctx);
+      expect(ctx.body).toBe("[object Object]");
     });
   });
 

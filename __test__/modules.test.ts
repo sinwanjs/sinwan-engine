@@ -13,7 +13,6 @@ import { HTTPRouter } from "../src/routers/http-router";
 import { LifecycleState } from "../src/types";
 import type { Sinwan } from "../src/sinwan";
 import type { Runtime } from "../src/runtime";
-import type { Context } from "../src/context/context";
 import type { EventBus } from "../src/event-bus";
 import type { ErrorHandler } from "../src/error-handler";
 import {

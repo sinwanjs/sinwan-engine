@@ -10,7 +10,7 @@ import { Runtime, type RuntimeConfig } from "../../src/runtime";
 import { HTTPRouter } from "../../src/routers/http-router";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
-import type { Context, UDPData } from "../../src/context/context";
+import type { UDPData } from "../../src/context/udp-context";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
   const bus = new EventBus();
@@ -605,7 +605,7 @@ describe("UDPRouter", () => {
         },
       });
       const bus = new EventBus();
-      bus.on("udp:data", (ctx: Context) => {
+      bus.on("udp:data", (ctx) => {
         ctx.stop();
       });
       const runtime = createRuntime({ bus });

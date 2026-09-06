@@ -1,17 +1,20 @@
 import type { udp } from "bun";
-import type { Context, UDPData } from "../context/context";
+import type { UdpContext, UDPData } from "../context/udp-context";
 import type { Runtime } from "../runtime";
 
-export type UDPHook = (ctx: Context) => Promise<void> | void;
+export type UDPHook = (ctx: UdpContext) => Promise<void> | void;
 
 export type UDPDataHook = (
-  ctx: Context,
+  ctx: UdpContext,
   data: Buffer,
   port: number,
   addr: string,
 ) => Promise<void> | void;
 
-export type UDPErrorHook = (ctx: Context, error: Error) => Promise<void> | void;
+export type UDPErrorHook = (
+  ctx: UdpContext,
+  error: Error,
+) => Promise<void> | void;
 
 export interface UDPRouteConfig {
   open?: UDPHook;
@@ -206,7 +209,7 @@ export class UDPRouter {
   private async udpHookError(
     runtime: Runtime,
     err: unknown,
-    ctx?: Context,
+    ctx?: UdpContext,
   ): Promise<void> {
     await runtime.errorNormalizer.report(err, ctx);
     const payload = runtime.errorNormalizer.normalize(err);
@@ -218,12 +221,12 @@ export class UDPRouter {
     socket: SinwanUDPSocket<T>,
     event: string,
     payload: unknown,
-    hook: ((ctx: Context, ...args: A) => Promise<void> | void) | undefined,
+    hook: ((ctx: UdpContext, ...args: A) => Promise<void> | void) | undefined,
     ...args: A
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
-    const ctx = runtime.acquireContext();
+    const ctx = runtime.acquireUdpContext();
     ctx.setUDP(socket as SinwanUDPSocket<UDPData>);
 
     const finalize = () => {

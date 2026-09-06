@@ -5,10 +5,10 @@
  * and manual URL parsing for lower overhead.
  */
 
-import type { Context } from "../context/context";
+import type { HttpContext } from "../context/http-context";
 import * as path from "node:path";
 
-export type RouteHandler = (ctx: Context) => Promise<void> | void;
+export type RouteHandler = (ctx: HttpContext) => Promise<void> | void;
 
 const SPECIFIC_METHODS = [
   "GET",
@@ -126,15 +126,12 @@ function clearParams(params: Record<string, string>): void {
 
 function wildcardValue(segments: string[], depth: number): string {
   let rest = "";
-  const append = (value: string) => {
-    if (value === "") return;
-    if (rest === "") rest = value;
-    else rest += `/${value}`;
-  };
 
   for (let i = depth; i < segments.length; i += 1) {
     const seg = segments[i];
-    if (seg !== undefined) append(seg);
+    if (seg === undefined || seg === "") continue;
+    if (rest === "") rest = seg;
+    else rest += `/${seg}`;
   }
 
   return rest ? `/${rest}` : "";
@@ -158,7 +155,13 @@ function radixInsert(
   if (seg === undefined) return;
 
   if (seg === "*") {
-    let wildcardChild = root.children.find((child) => child.isWildcard);
+    let wildcardChild: RadixNode | undefined;
+    for (const child of root.children) {
+      if (child.isWildcard) {
+        wildcardChild = child;
+        break;
+      }
+    }
     if (!wildcardChild) {
       wildcardChild = createRadixNode("*");
       root.children.push(wildcardChild);
@@ -169,9 +172,13 @@ function radixInsert(
 
   if (seg.startsWith(":")) {
     const paramName = seg.slice(1);
-    let paramChild = root.children.find(
-      (child) => child.isParam && child.paramName === paramName,
-    );
+    let paramChild: RadixNode | undefined;
+    for (const child of root.children) {
+      if (child.isParam && child.paramName === paramName) {
+        paramChild = child;
+        break;
+      }
+    }
     if (!paramChild) {
       paramChild = createRadixNode(seg);
       root.children.push(paramChild);
@@ -205,10 +212,11 @@ function radixSearch(
     const direct = getHandlers(node, method);
     if (direct) return direct;
 
-    const wildcardChild = node.children.find((child) => child.isWildcard);
-    if (wildcardChild) {
-      params["_wildcard"] = "";
-      return getHandlers(wildcardChild, method);
+    for (const child of node.children) {
+      if (child.isWildcard) {
+        params["_wildcard"] = "";
+        return getHandlers(child, method);
+      }
     }
 
     return null;
@@ -250,8 +258,10 @@ function radixHasAnyMethod(
 ): boolean {
   if (depth === segments.length) {
     if (nodeHasAnyHandlers(node)) return true;
-    const wildcardChild = node.children.find((child) => child.isWildcard);
-    return wildcardChild ? nodeHasAnyHandlers(wildcardChild) : false;
+    for (const child of node.children) {
+      if (child.isWildcard) return nodeHasAnyHandlers(child);
+    }
+    return false;
   }
 
   const seg = segments[depth];
@@ -372,7 +382,7 @@ export class HTTPRouter {
     const cleanPrefix = prefix === "/" ? "" : prefix.replace(/\/$/, "");
     const cleanRoot = path.resolve(root.replace(/\/$/, ""));
 
-    this.get(cleanPrefix + "/*", async (ctx) => {
+    const handler: RouteHandler = async (ctx) => {
       const subPath = ctx.params["_wildcard"] || "";
       if (subPath === "") return;
 
@@ -414,7 +424,8 @@ export class HTTPRouter {
       if (await file.exists()) {
         ctx.file(filePath);
       }
-    });
+    };
+    this.get(cleanPrefix + "/*", handler);
   }
 
   // ─── Route Registration ───────────────────────────────────
@@ -515,10 +526,6 @@ export class HTTPRouter {
     const m = isSpecificMethod(method) ? method : undefined;
 
     let segs: string[] | null = null;
-    const ensureSegments = (): string[] => {
-      if (segs === null) segs = segmentPath(pathname);
-      return segs;
-    };
 
     // 1) Exact method match
     if (m) {
@@ -532,9 +539,9 @@ export class HTTPRouter {
         };
       }
 
+      if (segs === null) segs = segmentPath(pathname);
       const params: Record<string, string> = Object.create(null);
-      const segments = ensureSegments();
-      const handlerBucket = radixSearch(this.radix[m], segments, 0, m, params);
+      const handlerBucket = radixSearch(this.radix[m], segs, 0, m, params);
       if (handlerBucket) {
         return {
           type: "match",
@@ -557,14 +564,7 @@ export class HTTPRouter {
         }
 
         clearParams(params);
-        const segments = ensureSegments();
-        const getBucket = radixSearch(
-          this.radix.GET,
-          segments,
-          0,
-          "GET",
-          params,
-        );
+        const getBucket = radixSearch(this.radix.GET, segs, 0, "GET", params);
         if (getBucket) {
           return {
             type: "match",
@@ -587,9 +587,9 @@ export class HTTPRouter {
       };
     }
 
+    if (segs === null) segs = segmentPath(pathname);
     const params: Record<string, string> = Object.create(null);
-    const segments = ensureSegments();
-    const allBucket = radixSearch(this.radixAll, segments, 0, "ALL", params);
+    const allBucket = radixSearch(this.radixAll, segs, 0, "ALL", params);
     if (allBucket) {
       return {
         type: "match",
@@ -600,15 +600,22 @@ export class HTTPRouter {
     }
 
     // 4) 405 detection
-    const segsFor405 = ensureSegments();
-    const routeExists =
-      SPECIFIC_METHODS.some(
-        (sm) =>
-          this.staticRoutes[sm].has(pathname) ||
-          radixHasAnyMethod(this.radix[sm], segsFor405, 0),
-      ) ||
-      this.staticAll.has(pathname) ||
-      radixHasAnyMethod(this.radixAll, segsFor405, 0);
+    const segsFor405 = segs;
+    let routeExists = false;
+    for (const sm of SPECIFIC_METHODS) {
+      if (
+        this.staticRoutes[sm].has(pathname) ||
+        radixHasAnyMethod(this.radix[sm], segsFor405, 0)
+      ) {
+        routeExists = true;
+        break;
+      }
+    }
+    if (!routeExists) {
+      routeExists =
+        this.staticAll.has(pathname) ||
+        radixHasAnyMethod(this.radixAll, segsFor405, 0);
+    }
 
     if (routeExists)
       return {
@@ -664,8 +671,61 @@ export class HTTPRouter {
 
   // ─── Static handler chain runner ─────────────────────────
 
+  private static async runChainAsync(
+    ctx: HttpContext,
+    chain: RouteHandler[],
+    startIndex: number,
+    firstResult: Promise<void>,
+    onError?: (error: unknown) => Promise<void> | void,
+  ): Promise<void> {
+    const len = chain.length;
+    let i = startIndex;
+    try {
+      await firstResult;
+      if (ctx.isFailed()) throw ctx.failError;
+      if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) {
+        if (ctx.isSkipped()) {
+          ctx.clearSkip();
+          throw new Error(
+            "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
+          );
+        }
+        return;
+      }
+      if (ctx.isSkipped()) {
+        i += ctx.skipCount;
+        ctx.clearSkip();
+      }
+      for (let j = i + 1; j < len; j += 1) {
+        const h = chain[j];
+        if (h) await h(ctx);
+        if (ctx.isFailed()) throw ctx.failError;
+        if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) {
+          if (ctx.isSkipped()) {
+            ctx.clearSkip();
+            throw new Error(
+              "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
+            );
+          }
+          return;
+        }
+        if (ctx.isSkipped()) {
+          j += ctx.skipCount;
+          ctx.clearSkip();
+        }
+      }
+    } catch (error) {
+      if (onError) {
+        await onError(error);
+        ctx.clearFail();
+        return;
+      }
+      throw error;
+    }
+  }
+
   private static runChain(
-    ctx: Context,
+    ctx: HttpContext,
     chain: RouteHandler[],
     onError?: (error: unknown) => Promise<void> | void,
   ): void | Promise<void> {
@@ -675,61 +735,14 @@ export class HTTPRouter {
       if (!handler) continue;
       const result = handler(ctx);
       if (result instanceof Promise) {
-        return (async () => {
-          try {
-            await result;
-            if (ctx.isFailed()) throw ctx.failError;
-            if (ctx.hasResponded() || ctx.isStopped() || ctx.isRespondEarly()) {
-              if (ctx.isSkipped()) {
-                ctx.clearSkip();
-                throw new Error(
-                  "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
-                );
-              }
-              return;
-            }
-            if (ctx.isSkipped()) {
-              i += ctx.skipCount;
-              ctx.clearSkip();
-            } // Skip next N handlers
-            for (let j = i + 1; j < len; j += 1) {
-              const h = chain[j];
-              if (h) await h(ctx);
-              if (ctx.isFailed()) throw ctx.failError;
-              if (
-                ctx.hasResponded() ||
-                ctx.isStopped() ||
-                ctx.isRespondEarly()
-              ) {
-                if (ctx.isSkipped()) {
-                  ctx.clearSkip();
-                  throw new Error(
-                    "[sinwan] ctx.skip() was called but the chain already halted (responded/stopped/responded-early). The skip has no effect.",
-                  );
-                }
-                return;
-              }
-              if (ctx.isSkipped()) {
-                j += ctx.skipCount;
-                ctx.clearSkip();
-              } // Skip next N handlers
-            }
-          } catch (error) {
-            if (onError) {
-              await onError(error);
-              ctx.clearFail();
-              return;
-            }
-            throw error;
-          }
-        })();
+        return HTTPRouter.runChainAsync(ctx, chain, i, result, onError);
       }
 
       if (ctx.isFailed()) {
         if (onError) {
           const r = onError(ctx.failError);
           ctx.clearFail();
-          if (r instanceof Promise) return (async () => await r)();
+          if (r instanceof Promise) return r;
         }
         throw ctx.failError;
       }
@@ -762,10 +775,9 @@ export class HTTPRouter {
    * @returns A Promise when the chain is async, otherwise void.
    */
   handle(
-    ctx: Context,
+    ctx: HttpContext,
     onError?: (error: unknown) => Promise<void> | void,
   ): void | Promise<void> {
-    if (ctx.tcp || ctx.udp || ctx.grpc) return;
     const pathname = ctx.pathname || "/";
     const match = this.resolve(ctx.req.method, pathname);
 
@@ -791,17 +803,7 @@ export class HTTPRouter {
     const result = HTTPRouter.runChain(ctx, match.handlers, onError);
 
     if (result instanceof Promise) {
-      return (async () => {
-        await result;
-        if (ctx.hasResponded() || ctx.isStopped()) return;
-        if (match.source === "specific") {
-          const allMatch = this.resolveAll(pathname);
-          if (allMatch) {
-            ctx.params = allMatch.params;
-            await HTTPRouter.runChain(ctx, allMatch.handlers, onError);
-          }
-        }
-      })();
+      return this.handleAsyncFallback(ctx, match, pathname, result, onError);
     }
 
     if (ctx.hasResponded() || ctx.isStopped()) return;
@@ -812,6 +814,32 @@ export class HTTPRouter {
 
       ctx.params = allMatch.params;
       return HTTPRouter.runChain(ctx, allMatch.handlers, onError);
+    }
+  }
+
+  private async handleAsyncFallback(
+    ctx: HttpContext,
+    match:
+      | {
+          type: "match";
+          source: "specific" | "all";
+          handlers: RouteHandler[];
+          params: Record<string, string>;
+        }
+      | { type: "method-not-allowed"; allowed: SpecificMethod[] }
+      | null,
+    pathname: string,
+    result: Promise<void>,
+    onError?: (error: unknown) => Promise<void> | void,
+  ): Promise<void> {
+    await result;
+    if (ctx.hasResponded() || ctx.isStopped()) return;
+    if (match && match.type === "match" && match.source === "specific") {
+      const allMatch = this.resolveAll(pathname);
+      if (allMatch) {
+        ctx.params = allMatch.params;
+        await HTTPRouter.runChain(ctx, allMatch.handlers, onError);
+      }
     }
   }
 }

@@ -1,20 +1,17 @@
 import { describe, expect, test, mock } from "bun:test";
 import { InternalAssets, type AssetEntry } from "../src/internal-assets";
-import type { Context } from "../src/context/context";
+import type { HttpContext } from "../src/context/http-context";
 
 function createMockContext(
   url: string,
-  overrides: Partial<Context> = {},
-): Context {
+  overrides: Partial<HttpContext> = {},
+): HttpContext {
   return {
-    req: { url } as unknown as Context["req"],
-    tcp: undefined,
-    udp: undefined,
-    grpc: undefined,
+    req: { url } as unknown as HttpContext["req"],
     headers: new Headers(),
     setRawResponse: mock(() => {}),
     ...overrides,
-  } as unknown as Context;
+  } as unknown as HttpContext;
 }
 
 describe("InternalAssets", () => {
@@ -211,36 +208,6 @@ describe("InternalAssets", () => {
       const result = assets.handle(ctx);
       expect(result).toBe("handled");
       expect(ctx.setRawResponse).toHaveBeenCalled();
-    });
-
-    test("skips for TCP context", () => {
-      const assets = new InternalAssets();
-      const ctx = createMockContext("http://localhost/robots.txt", {
-        tcp: {} as Context["tcp"],
-      });
-      const result = assets.handle(ctx);
-      expect(result).toBe("continue");
-      expect(ctx.setRawResponse).not.toHaveBeenCalled();
-    });
-
-    test("skips for UDP context", () => {
-      const assets = new InternalAssets();
-      const ctx = createMockContext("http://localhost/robots.txt", {
-        udp: {} as Context["udp"],
-      });
-      const result = assets.handle(ctx);
-      expect(result).toBe("continue");
-      expect(ctx.setRawResponse).not.toHaveBeenCalled();
-    });
-
-    test("skips for gRPC context", () => {
-      const assets = new InternalAssets();
-      const ctx = createMockContext("http://localhost/robots.txt", {
-        grpc: {} as Context["grpc"],
-      });
-      const result = assets.handle(ctx);
-      expect(result).toBe("continue");
-      expect(ctx.setRawResponse).not.toHaveBeenCalled();
     });
 
     test("favicon.ico returns 204 by default", () => {

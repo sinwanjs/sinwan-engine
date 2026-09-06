@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { buildResponse } from "../src/response";
-import { Context, type ContextOptions } from "../src/context/context";
+import { HttpContext } from "../src/context/http-context";
+import type { ContextOptions } from "../src/context/base-context";
 import { EventBus } from "../src/event-bus";
 import { ErrorHandler } from "../src/error-handler";
 
-function createCtx(overrides?: Partial<ContextOptions>): Context {
-  return new Context({
+function createCtx(overrides?: Partial<ContextOptions>): HttpContext {
+  return new HttpContext({
     bus: new EventBus(),
     errorHandler: new ErrorHandler(),
     ...overrides,

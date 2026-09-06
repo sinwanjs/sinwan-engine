@@ -5,19 +5,25 @@ import type {
   UnixSocketListener,
 } from "bun";
 // import type { TLSOptions } from "bun";
-import type { Context, TCPData } from "../context/context";
+import type { TcpContext, TCPData } from "../context/tcp-context";
 import type { Runtime } from "../runtime";
 
-export type TCPHook = (tcp: Context) => Promise<void> | void;
+export type TCPHook = (tcp: TcpContext) => Promise<void> | void;
 
-export type TCPDataHook = (tcp: Context, data: Buffer) => Promise<void> | void;
+export type TCPDataHook = (
+  tcp: TcpContext,
+  data: Buffer,
+) => Promise<void> | void;
 
 export type TCPCloseHook = (
-  tcp: Context,
+  tcp: TcpContext,
   error?: Error,
 ) => Promise<void> | void;
 
-export type TCPErrorHook = (tcp: Context, error: Error) => Promise<void> | void;
+export type TCPErrorHook = (
+  tcp: TcpContext,
+  error: Error,
+) => Promise<void> | void;
 
 export interface TCPRouteConfig {
   open?: TCPHook;
@@ -229,7 +235,7 @@ export class TCPRouter {
   private async tcpHookError(
     runtime: Runtime,
     err: unknown,
-    ctx?: Context,
+    ctx?: TcpContext,
   ): Promise<void> {
     await runtime.errorNormalizer.report(err, ctx);
     const payload = runtime.errorNormalizer.normalize(err);
@@ -241,12 +247,12 @@ export class TCPRouter {
     socket: SinwanTCPSocket<unknown>,
     event: string,
     payload: unknown,
-    hook?: (ctx: Context, ...args: A) => Promise<void> | void,
+    hook?: (ctx: TcpContext, ...args: A) => Promise<void> | void,
     ...args: A
   ): void {
     if (!hook && !runtime.bus.hasListeners(event)) return;
 
-    const ctx = runtime.acquireContext();
+    const ctx = runtime.acquireTcpContext();
     ctx.setTCP(socket);
 
     this.dispatchTCPHook(runtime, ctx, event, payload, hook, args);
@@ -254,10 +260,10 @@ export class TCPRouter {
 
   private dispatchTCPHook<A extends unknown[]>(
     runtime: Runtime,
-    ctx: Context,
+    ctx: TcpContext,
     event: string,
     payload: unknown,
-    hook: ((ctx: Context, ...args: A) => Promise<void> | void) | undefined,
+    hook: ((ctx: TcpContext, ...args: A) => Promise<void> | void) | undefined,
     args: A,
   ): void {
     const finalize = () => {

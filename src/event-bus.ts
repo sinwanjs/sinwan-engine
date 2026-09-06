@@ -14,8 +14,8 @@ import {
   captureRejectionSymbol,
   errorMonitor,
 } from "node:events";
-import type { Context } from "./context/context";
 import type {
+  AnyContext,
   EmitOptions,
   EmitResult,
   EventHandler,
@@ -246,9 +246,13 @@ export class EventBus {
   }
 
   removeAllListeners(event?: string | symbol): this {
-    this.emitter.removeAllListeners(event);
-    if (event) this.invalidateHasListenersFor(event);
-    else this.invalidateCaches();
+    if (event !== undefined) {
+      this.emitter.removeAllListeners(event);
+      this.invalidateHasListenersFor(event);
+    } else {
+      this.emitter.removeAllListeners();
+      this.invalidateCaches();
+    }
     return this;
   }
 
@@ -375,7 +379,7 @@ export class EventBus {
 
   async emitAsync(
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     payload?: unknown,
     options?: EmitOptions,
   ): Promise<EmitResult> {
@@ -389,7 +393,7 @@ export class EventBus {
    */
   async emitParallel(
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     payload?: unknown,
     options?: EmitOptions,
   ): Promise<void> {
@@ -423,7 +427,7 @@ export class EventBus {
 
   emitSync(
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     payload?: unknown,
     options?: EmitOptions,
   ): EmitResult {
@@ -432,7 +436,7 @@ export class EventBus {
 
   private async emitInternalAsync(
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     payload: unknown,
     options?: EmitOptions,
   ): Promise<EmitResult> {
@@ -483,7 +487,7 @@ export class EventBus {
 
   private emitInternalSync(
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     payload: unknown,
     options?: EmitOptions,
   ): EmitResult {
@@ -549,7 +553,7 @@ export class EventBus {
   private buildMeta(
     name: string,
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     options?: EmitOptions,
   ): EventMeta {
     return {
@@ -669,13 +673,13 @@ export class EventBus {
     return wrapped;
   }
 
-  private trace(ctx: Context, meta: EventMeta, payload: unknown): void {
+  private trace(ctx: AnyContext, meta: EventMeta, payload: unknown): void {
     ctx.recordEvent(meta, payload);
   }
 
   private emitErrorMonitor(
     error: unknown,
-    ctx: Context,
+    ctx: AnyContext,
     meta: EventMeta,
   ): void {
     const listeners = this.emitter.rawListeners(errorMonitor) as Listener[];
@@ -692,7 +696,7 @@ export class EventBus {
   private handleRejection(
     error: unknown,
     event: string,
-    ctx: Context,
+    ctx: AnyContext,
     payload: unknown,
     meta: EventMeta,
   ): void {

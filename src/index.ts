@@ -6,8 +6,13 @@
 
 // ─── Classes ──────────────────────────────────────────────
 
-export { Context, type ContextOptions } from "./context/context";
-export type { GRPCData, TCPData, WSSData, UDPData } from "./context/context";
+export { BaseContext, type ContextProtocol } from "./context/base-context";
+export type { ContextOptions } from "./context/base-context";
+export { HttpContext } from "./context/http-context";
+export { WsContext, type WSSData } from "./context/ws-context";
+export { TcpContext, type TCPData } from "./context/tcp-context";
+export { UdpContext, type UDPData } from "./context/udp-context";
+export { GrpcContext, type GRPCData } from "./context/grpc-context";
 export { EventBus, type EventBusOptions } from "./event-bus";
 export { ErrorHandler, type ErrorHandlerOptions } from "./error-handler";
 export type {

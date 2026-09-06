@@ -8,7 +8,7 @@
  * TCP, UDP, and gRPC routers use ErrorNormalizer directly.
  */
 
-import type { Context } from "./context/context";
+import type { HttpContext } from "./context/http-context";
 import type { ErrorPayload } from "./types";
 import {
   ErrorNormalizer,
@@ -24,8 +24,8 @@ export type ErrorResponseType = "json" | "html";
 /** Callback to customize error response format. */
 export type ErrorResponseFormatter = (
   payload: ErrorPayload,
-  ctx: Context,
-) => { body: string; type: ErrorResponseType };
+  ctx: HttpContext,
+) => { body: unknown; type?: ErrorResponseType };
 
 /** Options for configuring the ErrorHandler */
 export interface ErrorHandlerOptions extends ErrorNormalizerOptions {
@@ -123,7 +123,7 @@ export class ErrorHandler {
    */
   async handle(
     error: unknown,
-    ctx: Context,
+    ctx: HttpContext,
     showMessageInProduction: boolean = false,
   ): Promise<void> {
     const payload = this._normalizer.normalize(error, showMessageInProduction);
@@ -137,15 +137,22 @@ export class ErrorHandler {
 
       // Use custom formatter if provided
       if (this.formatResponse) {
-        const { body, type } = this.formatResponse(payload, ctx);
+        const { body, type = this.responseType } = this.formatResponse(
+          payload,
+          ctx,
+        );
         if (type === "html") {
-          ctx.html(body, status);
+          ctx.html(typeof body === "string" ? body : String(body), status);
         } else {
-          try {
-            ctx.json(JSON.parse(body), status);
-          } catch {
-            // Formatter returned invalid JSON — fall back to plain text
-            ctx.json({ error: body }, status);
+          if (typeof body === "string") {
+            try {
+              ctx.json(JSON.parse(body), status);
+            } catch {
+              // Formatter returned invalid JSON — fall back to plain text
+              ctx.json({ error: body }, status);
+            }
+          } else {
+            ctx.json(body, status);
           }
         }
         return;

@@ -2,6 +2,43 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] — 2026-08-06 — Cookie Support, HttpRespond Helpers & Flexible Error Formatting
+
+### Added
+
+- **Cookie support** — `ctx.cookies` is now a Bun `CookieMap` parsed lazily from the `Cookie` header. Supports `get`, `set`, `delete`, iteration, and `toSetCookieHeaders()`. The response builder applies pending cookie mutations as `Set-Cookie` headers automatically.
+- **`ctx.cookieHeaders()`** — returns accumulated `Set-Cookie` values from `ctx.cookies` mutations.
+- **`buildResponse()` cookie handling** — appends `Set-Cookie` headers before finalizing the response.
+- **`cookie:set` event** — new built-in event emitted during response finalization when cookie mutations are applied as `Set-Cookie` headers. Payload: `{ headers: string[] }`. Useful for logging, auditing, or tracing cookie changes. Emitted with `forceDelivery: true` so listeners fire even after the context is stopped.
+- **`src/context/helpers/http-respond.ts`** — new `HttpRespondApi` bundling all HTTP status-code helpers (`ok`, `notFound`, `badRequest`, `continue`, …). Exposed as `ctx.httpRespond` and merged into `Context` so `ctx.ok()` still works.
+- **`ErrorResponseFormatter` flexibility** — `body` is now `unknown` (return objects/arrays directly for JSON) and `type` is optional (defaults to the configured `responseType`).
+- **Protocol-specific context classes** — the monolithic all-in-one `Context` class has been split into a protocol-rooted hierarchy:
+  - `BaseContext` (`src/context/base-context.ts`) — shared state (status, headers, body, event bus, error handler, pool lifecycle, flow control, cookies, scoped listeners, disposal, event trace).
+  - `HttpContext` (`src/context/http-context.ts`) — HTTP-specific methods (`json`, `text`, `html`, `redirect`, `stream`, `sse`, `file`, `buffer`, `parseBody`, `formData`, `saveFile`, `saveFiles`, status-code helpers via `httpRespond`).
+  - `WsContext` (`src/context/ws-context.ts`) — WebSocket methods (`send`, `publish`, `subscribe`, `unsubscribe`, `close`, `ping`, `cork`, `pendingWebSockets`, `publishToTopic`).
+  - `TcpContext` (`src/context/tcp-context.ts`) — TCP socket methods (`write`, `end`, `destroy`, `setTimeout`, `flush`).
+  - `UdpContext` (`src/context/udp-context.ts`) — UDP socket methods (`send`, `close`, `address`).
+  - `GrpcContext` (`src/context/grpc-context.ts`) — gRPC call methods (`sendMetadata`, `sendMessage`, `end`, `status`).
+- **Per-protocol context pools** — `Runtime` now maintains separate pools (`httpPool`, `wsPool`, `tcpPool`, `udpPool`, `grpcPool`) for each protocol context. `acquireHttpContext()`, `acquireWsContext()`, `acquireTcpContext()`, `acquireUdpContext()`, `acquireGrpcContext()` return the appropriate typed context. `releaseContext()` routes each context back to its per-protocol pool.
+- **`AnyContext` type** — simplified to `BaseContext` (the union with the legacy `Context` is no longer needed).
+
+### Changed
+
+- `ctx.cookies` is constructed from the `Cookie` header and cached per request instead of relying on `Request.prototype.cookies`.
+- HTTP status helpers moved from inline `Context` methods to `HttpRespondApi`.
+- **`Runtime.fetch()`** now uses `HttpContext` (acquired via `acquireHttpContext()`) for the HTTP request path instead of the legacy all-in-one `Context`.
+- **`Runtime.acquireContext()`** now delegates to `acquireHttpContext()` and returns `HttpContext`.
+- **`Runtime.releaseContext()`** accepts `BaseContext` and routes to the matching per-protocol pool (no more legacy pool fallback).
+- **`src/context/index.ts`** barrel now exports the protocol-specific classes and their data types (`WSSData`, `TCPData`, `UDPData`, `GRPCData`) from their respective modules.
+- **`src/index.ts`** public exports updated — `Context`/`ContextOptions`/`GRPCData`/`TCPData`/`WSSData`/`UDPData` are now sourced from the protocol-specific context modules instead of the deleted `context.ts`.
+
+### Removed
+
+- **`ctx.respondContinue()`** — replaced by `ctx.httpRespond.continue()` and `ctx.continue()`. With the helper clearly scoped under the response API, the `respondContinue` name is no longer needed.
+- **`src/context/context.ts`** — the monolithic all-in-one `Context` class has been deleted. All functionality is now split across `BaseContext` and the protocol-specific context classes.
+- **`src/context/helpers/socket-helper.ts`** — the `SocketHelper` mixin (WS/TCP/UDP delegation on a single class) has been deleted. Socket delegation now lives on the respective `WsContext`, `TcpContext`, and `UdpContext` classes.
+- **Legacy `contextPool`** — the single all-in-one context pool on `Runtime` has been removed in favor of per-protocol pools.
+
 ## [2.0.0] — 2026-08-04 — Breaking API Cleanup & Control-Flow Fixes
 
 ### Breaking Changes

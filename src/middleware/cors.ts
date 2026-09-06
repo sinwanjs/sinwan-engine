@@ -49,7 +49,7 @@
  * small typed helpers, keeping `sinwan-engine` dependency-free.
  */
 
-import type { Context } from "../context/context";
+import type { HttpContext } from "../context/http-context";
 import type { RouteHandler } from "../routers/http-router";
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ export interface CorsOptions {
  * static configuration for a single request, or `cb(err)` to fail the chain.
  */
 export type CorsOptionsDelegate = (
-  ctx: Context,
+  ctx: HttpContext,
   cb: (err: Error | null, options?: CorsOptions) => void,
 ) => void;
 
@@ -190,7 +190,7 @@ function joinHeaders(value: string | string[]): string {
  */
 function configureOrigin(
   options: ResolvedCorsOptions,
-  ctx: Context,
+  ctx: HttpContext,
 ): HeaderInput[] {
   const requestOrigin = ctx.req.headers.get("origin") ?? "";
   const records: HeaderInput[] = [];
@@ -238,7 +238,7 @@ function configureCredentials(
  */
 function configureAllowedHeaders(
   options: ResolvedCorsOptions,
-  ctx: Context,
+  ctx: HttpContext,
 ): HeaderInput[] {
   const records: HeaderInput[] = [];
   let allowedHeaders = options.allowedHeaders ?? options.headers;
@@ -289,7 +289,7 @@ function configureMaxAge(options: ResolvedCorsOptions): HeaderRecord | null {
  * Append a value to the `Vary` response header, de-duplicating
  * case-insensitively. Inlined replacement for the `vary` package.
  */
-function appendVary(ctx: Context, value: string): void {
+function appendVary(ctx: HttpContext, value: string): void {
   if (!value) return;
   const existing = ctx.headers.get("Vary");
   if (existing === null) {
@@ -323,7 +323,7 @@ function appendVary(ctx: Context, value: string): void {
  *  - falsy `value`s are skipped (e.g. `Access-Control-Allow-Origin: false`
  *    when an origin is not allowed — the header is simply omitted).
  */
-function applyHeaders(headers: HeaderInput, ctx: Context): void {
+function applyHeaders(headers: HeaderInput, ctx: HttpContext): void {
   if (headers === null) return;
 
   if (Array.isArray(headers)) {
@@ -393,7 +393,7 @@ function mergeDefaults(options: CorsOptions): MergedCorsOptions {
  * - Other methods: sets origin/credentials/exposed-headers, then returns so
  *   the route handler runs.
  */
-function applyCors(options: ResolvedCorsOptions, ctx: Context): void {
+function applyCors(options: ResolvedCorsOptions, ctx: HttpContext): void {
   // origin: false → CORS disabled for this request (matches express behavior
   // where a falsy origin from the delegate skips all header setting).
   if (options.origin === false) return;
@@ -435,7 +435,7 @@ function applyCors(options: ResolvedCorsOptions, ctx: Context): void {
 
 function resolveOptionsDelegate(
   delegate: CorsOptionsDelegate,
-  ctx: Context,
+  ctx: HttpContext,
 ): Promise<CorsOptions> {
   return new Promise((resolve, reject) => {
     try {
@@ -503,7 +503,7 @@ interface CorsFactory {
  */
 async function resolveOrigin(
   options: MergedCorsOptions,
-  ctx: Context,
+  ctx: HttpContext,
 ): Promise<ResolvedCorsOptions> {
   const { origin } = options;
   if (isOriginDelegate(origin)) {
@@ -525,7 +525,7 @@ function buildHandler(
   const staticOptions: CorsOptions =
     typeof input === "function" ? {} : (input ?? {});
 
-  return async function corsMiddleware(ctx: Context): Promise<void> {
+  return async function corsMiddleware(ctx: HttpContext): Promise<void> {
     // 1. Resolve the effective options (static or per-request delegate).
     const userOptions: CorsOptions = delegate
       ? await resolveOptionsDelegate(delegate, ctx)

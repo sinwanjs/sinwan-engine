@@ -9,9 +9,9 @@
  * - Dynamic: custom paths can be registered at runtime via app.internalAssets.register().
  */
 
-import type { Context } from "./context/context";
+import type { HttpContext } from "./context/http-context";
 
-export type AssetHandler = (ctx: Context) => void;
+export type AssetHandler = (ctx: HttpContext) => void;
 
 export interface AssetEntry {
   /** The URL pathname to match (e.g. "/favicon.ico"). */
@@ -48,13 +48,13 @@ export interface InternalAssetsOptions {
   blockPatterns?: string[];
 }
 
-function noopResponse(ctx: Context, status: number): void {
+function noopResponse(ctx: HttpContext, status: number): void {
   ctx.setRawResponse(null, status);
   ctx.headers.set("Content-Length", "0");
 }
 
 function textResponse(
-  ctx: Context,
+  ctx: HttpContext,
   content: string,
   contentType: string,
   status = 200,
@@ -63,7 +63,7 @@ function textResponse(
 }
 
 function binaryResponse(
-  ctx: Context,
+  ctx: HttpContext,
   data: Uint8Array,
   contentType: string,
   status = 200,
@@ -208,10 +208,7 @@ export class InternalAssets {
    *           stop without producing a response (let Bun handle it).
    *         - `"continue"`    — no match; the Runtime should proceed to WS/HTTP.
    */
-  handle(ctx: Context): "handled" | "passthrough" | "continue" {
-    // Skip for non-HTTP contexts
-    if (ctx.tcp || ctx.udp || ctx.grpc) return "continue";
-
+  handle(ctx: HttpContext): "handled" | "passthrough" | "continue" {
     const url = ctx.req.url;
     const protoIdx = url.indexOf("://");
     let start = 0;

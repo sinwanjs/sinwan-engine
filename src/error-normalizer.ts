@@ -11,11 +11,14 @@
  * telemetry without HTTP-specific response building.
  */
 
-import type { Context } from "./context/context";
+import type { AnyContext } from "./types";
 import type { ErrorPayload } from "./types";
 
 /** Optional hook for external logging/telemetry integration. */
-export type ErrorHook = (error: unknown, ctx?: Context) => void | Promise<void>;
+export type ErrorHook = (
+  error: unknown,
+  ctx?: AnyContext,
+) => void | Promise<void>;
 
 /** Options for configuring the ErrorNormalizer. */
 export interface ErrorNormalizerOptions {
@@ -88,7 +91,7 @@ export class ErrorNormalizer {
    * Invoke the optional telemetry hook with the raw error.
    * Hook errors are logged but never propagated.
    */
-  async report(error: unknown, ctx?: Context): Promise<void> {
+  async report(error: unknown, ctx?: AnyContext): Promise<void> {
     if (!this.onError) return;
     try {
       await this.onError(error, ctx);

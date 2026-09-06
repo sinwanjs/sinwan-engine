@@ -2,11 +2,11 @@ import { describe, expect, test, beforeEach, mock } from "bun:test";
 import { errorMonitor, captureRejectionSymbol } from "node:events";
 import { EventBus } from "../src/event-bus";
 import { createTestBus, createTestContext } from "./helpers";
-import type { Context } from "../src/context/context";
+import type { HttpContext } from "../src/context/http-context";
 
 describe("EventBus", () => {
   let bus: EventBus;
-  let ctx: Context;
+  let ctx: HttpContext;
 
   beforeEach(() => {
     bus = createTestBus();

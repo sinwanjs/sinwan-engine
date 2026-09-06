@@ -9,7 +9,7 @@ import { Runtime, type RuntimeConfig } from "../../src/runtime";
 import { HTTPRouter } from "../../src/routers/http-router";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
-import type { Context, TCPData } from "../../src/context/context";
+import type { TCPData } from "../../src/context/tcp-context";
 import type { Socket } from "bun";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
@@ -632,7 +632,7 @@ describe("TCPRouter", () => {
         },
       });
       const bus = new EventBus();
-      bus.on("tcp:open", (ctx: Context) => {
+      bus.on("tcp:open", (ctx) => {
         ctx.stop();
       });
       const runtime = createRuntime({ bus });
@@ -940,7 +940,7 @@ describe("TCPRouter", () => {
         },
       });
       const bus = new EventBus();
-      bus.on("tcp:data", (ctx: Context) => {
+      bus.on("tcp:data", (ctx) => {
         ctx.stop();
       });
       const runtime = createRuntime({ bus });

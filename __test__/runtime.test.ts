@@ -4,7 +4,7 @@ import { EventBus } from "../src/event-bus";
 import { ErrorHandler } from "../src/error-handler";
 import { HTTPRouter } from "../src/routers/http-router";
 import { WSRouter } from "../src/routers/ws-router";
-import { Context } from "../src/context/context";
+import { HttpContext } from "../src/context/http-context";
 import type { Plugin, Request } from "../src/types";
 
 function createRuntime(overrides?: Partial<RuntimeConfig>): Runtime {
@@ -98,13 +98,13 @@ describe("Runtime", () => {
   // ─── acquireContext ──────────────────────────────────────
 
   describe("acquireContext()", () => {
-    test("creates new Context when pool is empty", () => {
+    test("creates new HttpContext when pool is empty", () => {
       const rt = createRuntime();
       const ctx = rt.acquireContext();
-      expect(ctx).toBeInstanceOf(Context);
+      expect(ctx).toBeInstanceOf(HttpContext);
     });
 
-    test("reuses Context from pool when available", () => {
+    test("reuses HttpContext from pool when available", () => {
       const rt = createRuntime();
       const ctx1 = rt.acquireContext();
       rt.releaseContext(ctx1);
@@ -112,21 +112,20 @@ describe("Runtime", () => {
       expect(ctx2).toBe(ctx1);
     });
 
-    test("passes server to Context", () => {
+    test("passes server to HttpContext", () => {
       const rt = createRuntime();
       const mockServer = { publish: () => 0 } as unknown as Bun.Server<unknown>;
       const ctx = rt.acquireContext(mockServer);
-      // Server should be attached — pendingWebSockets would throw if not
-      expect(() => ctx.pendingWebSockets).not.toThrow();
+      expect(ctx.server).toBe(mockServer);
     });
 
-    test("passes server to reused Context", () => {
+    test("passes server to reused HttpContext", () => {
       const rt = createRuntime();
       const ctx1 = rt.acquireContext();
       rt.releaseContext(ctx1);
       const mockServer = { publish: () => 0 } as unknown as Bun.Server<unknown>;
       const ctx2 = rt.acquireContext(mockServer);
-      expect(() => ctx2.pendingWebSockets).not.toThrow();
+      expect(ctx2.server).toBe(mockServer);
     });
   });
 
@@ -157,6 +156,115 @@ describe("Runtime", () => {
       // Pool was LIFO, so reused1 should be ctx2, reused2 should be ctx1
       expect(reused1).toBe(ctx2);
       expect(reused2).toBe(ctx1);
+    });
+  });
+
+  // ─── per-protocol context pools ───────────────────────────
+
+  describe("acquireHttpContext()", () => {
+    test("returns an HttpContext and reuses released instances", () => {
+      const rt = createRuntime();
+      const ctx = rt.acquireHttpContext();
+      expect(ctx.protocol).toBe("http");
+      ctx.set("key", "value");
+      rt.releaseContext(ctx);
+      const reused = rt.acquireHttpContext();
+      expect(reused).toBe(ctx);
+      expect(reused.has("key")).toBe(false);
+    });
+  });
+
+  describe("acquireWsContext()", () => {
+    test("returns a WsContext and reuses released instances", () => {
+      const rt = createRuntime();
+      const ctx = rt.acquireWsContext();
+      expect(ctx.protocol).toBe("ws");
+      ctx.set("key", "value");
+      rt.releaseContext(ctx);
+      const reused = rt.acquireWsContext();
+      expect(reused).toBe(ctx);
+      expect(reused.has("key")).toBe(false);
+    });
+  });
+
+  describe("acquireTcpContext()", () => {
+    test("returns a TcpContext and reuses released instances", () => {
+      const rt = createRuntime();
+      const ctx = rt.acquireTcpContext();
+      expect(ctx.protocol).toBe("tcp");
+      ctx.set("key", "value");
+      rt.releaseContext(ctx);
+      const reused = rt.acquireTcpContext();
+      expect(reused).toBe(ctx);
+      expect(reused.has("key")).toBe(false);
+    });
+  });
+
+  describe("acquireUdpContext()", () => {
+    test("returns a UdpContext and reuses released instances", () => {
+      const rt = createRuntime();
+      const ctx = rt.acquireUdpContext();
+      expect(ctx.protocol).toBe("udp");
+      ctx.set("key", "value");
+      rt.releaseContext(ctx);
+      const reused = rt.acquireUdpContext();
+      expect(reused).toBe(ctx);
+      expect(reused.has("key")).toBe(false);
+    });
+  });
+
+  describe("acquireGrpcContext()", () => {
+    test("returns a GrpcContext and reuses released instances", () => {
+      const rt = createRuntime();
+      const ctx = rt.acquireGrpcContext();
+      expect(ctx.protocol).toBe("grpc");
+      ctx.set("key", "value");
+      rt.releaseContext(ctx);
+      const reused = rt.acquireGrpcContext();
+      expect(reused).toBe(ctx);
+      expect(reused.has("key")).toBe(false);
+    });
+  });
+
+  describe("releaseContext() — protocol routing", () => {
+    test("routes each protocol context to its own pool", () => {
+      const rt = createRuntime();
+      const http = rt.acquireHttpContext();
+      const ws = rt.acquireWsContext();
+      const tcp = rt.acquireTcpContext();
+      const udp = rt.acquireUdpContext();
+      const grpc = rt.acquireGrpcContext();
+      rt.releaseContext(http);
+      rt.releaseContext(ws);
+      rt.releaseContext(tcp);
+      rt.releaseContext(udp);
+      rt.releaseContext(grpc);
+      expect(rt.acquireHttpContext()).toBe(http);
+      expect(rt.acquireWsContext()).toBe(ws);
+      expect(rt.acquireTcpContext()).toBe(tcp);
+      expect(rt.acquireUdpContext()).toBe(udp);
+      expect(rt.acquireGrpcContext()).toBe(grpc);
+    });
+
+    test("does not exceed maxPoolSize for a protocol pool", () => {
+      const rt = createRuntime({ maxPoolSize: 1 } as RuntimeConfig);
+      const ctx1 = rt.acquireWsContext();
+      const ctx2 = rt.acquireWsContext();
+      rt.releaseContext(ctx1);
+      rt.releaseContext(ctx2); // pool full — not pooled
+      const reused = rt.acquireWsContext();
+      expect(reused).toBe(ctx1);
+      expect(rt.acquireWsContext()).not.toBe(ctx2);
+    });
+
+    test("double release of a protocol context is a no-op", () => {
+      const rt = createRuntime();
+      const ctx = rt.acquireWsContext();
+      rt.releaseContext(ctx);
+      rt.releaseContext(ctx);
+      expect(rt.acquireWsContext()).toBe(ctx);
+      const fresh = rt.acquireWsContext();
+      expect(fresh).not.toBe(ctx);
     });
   });
 
@@ -365,6 +473,34 @@ describe("Runtime", () => {
       const res = await rt.fetch(createMockReq());
       expect(res.status).toBe(500);
     });
+
+    test("request:error fires even when context is stopped (error after ctx.json)", async () => {
+      const rt = createRuntime();
+      rt.httpRouter.get("/", (ctx) => {
+        ctx.json({ ok: true }); // stops the context
+        throw new Error("fail after response");
+      });
+      let errorFired = false;
+      rt.bus.on("request:error", () => {
+        errorFired = true;
+      });
+      await rt.fetch(createMockReq());
+      expect(errorFired).toBe(true);
+    });
+
+    test("error event fires even when context is stopped (error after ctx.json)", async () => {
+      const rt = createRuntime();
+      rt.httpRouter.get("/", (ctx) => {
+        ctx.json({ ok: true }); // stops the context
+        throw new Error("fail after response");
+      });
+      let errorFired = false;
+      rt.bus.on("error", () => {
+        errorFired = true;
+      });
+      await rt.fetch(createMockReq());
+      expect(errorFired).toBe(true);
+    });
   });
 
   // ─── fetch() — persistent body (stream/iterator) ─────────
@@ -418,9 +554,9 @@ describe("Runtime", () => {
         ctx.json({ ok: true });
       });
       await rt.fetch(createMockReq());
-      // Context should be pooled after first request
+      // HttpContext should be pooled after first request
       const ctx = rt.acquireContext();
-      expect(ctx).toBeInstanceOf(Context);
+      expect(ctx).toBeInstanceOf(HttpContext);
       rt.releaseContext(ctx);
     });
   });

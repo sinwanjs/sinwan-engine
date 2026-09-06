@@ -5,15 +5,19 @@
  * Always produces a valid Response — never returns null/undefined.
  */
 
-import type { Context } from "./context/context";
+import type { HttpContext } from "./context/http-context";
 
 /**
  * Build a Web API Response from the finalized Context.
  *
  * Optimization: Only allocates Headers if they were actually used.
  */
-export function buildResponse(ctx: Context): Response {
+export function buildResponse(ctx: HttpContext): Response {
   const { body, statusCode } = ctx;
+
+  // Apply pending cookie mutations (from ctx.cookies.set/delete or
+  // ctx.setCookie/ctx.deleteCookie) as Set-Cookie headers.
+  ctx.applyCookieHeaders();
 
   // Check if headers were ever allocated (lazy init)
   const headers = ctx.hasHeaders() ? ctx.headers : undefined;
