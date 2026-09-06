@@ -36,6 +36,8 @@ import type { Plugin } from "./types";
 
 export interface SinwanModule {
   readonly name: string;
+  /** Optional human-readable description for debugging/logging. */
+  readonly description?: string;
   readonly register: (app: Sinwan) => void;
 }
 
@@ -169,7 +171,8 @@ function createFluentRouter(router: HTTPRouter): HTTPRouterFluent {
 export function createHttpModule(config: HTTPModuleConfig): HTTPModule {
   return {
     type: "http",
-    name: config.description ?? `http:${config.prefix ?? "/"}`,
+    name: `http:${config.prefix ?? "/"}`,
+    description: config.description,
     prefix: config.prefix,
     // The HTTPRouter is passed by Sinwan.register() as the second argument.
     register(app, httpRouter) {
@@ -208,7 +211,8 @@ export interface WSModule extends SinwanModule {
 export function createWSModule(config: WSModuleConfig): WSModule {
   return {
     type: "ws",
-    name: config.description ?? `ws:${config.path}`,
+    name: `ws:${config.path}`,
+    description: config.description,
     path: config.path,
     register(app) {
       app.ws(config.path, config.config);
@@ -231,7 +235,8 @@ export interface TCPModule extends SinwanModule {
 export function createTCPModule(config: TCPModuleConfig): TCPModule {
   return {
     type: "tcp",
-    name: config.description ?? `tcp:${config.name}`,
+    name: `tcp:${config.name}`,
+    description: config.description,
     register(app) {
       app.tcp(config.name, config.config);
     },
@@ -253,7 +258,8 @@ export interface UDPModule extends SinwanModule {
 export function createUDPModule(config: UDPModuleConfig): UDPModule {
   return {
     type: "udp",
-    name: config.description ?? `udp:${config.name}`,
+    name: `udp:${config.name}`,
+    description: config.description,
     register(app) {
       app.udp(config.name, config.config);
     },
@@ -273,7 +279,8 @@ export interface GRPCModule extends SinwanModule {
 export function createGRPCModule(config: GRPCModuleConfig): GRPCModule {
   return {
     type: "grpc",
-    name: config.description ?? `grpc:${config.name}`,
+    name: `grpc:${config.name}`,
+    description: config.description,
     register(_app) {
       getGRPCProvider().registerService(config.name, config.config);
     },

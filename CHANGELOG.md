@@ -2,6 +2,16 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.1] — 2026-09-06 — Module description field fix
+
+### Fixed
+
+- **Module `name` vs `description` separation** — all module factories (`createHttpModule`, `createWSModule`, `createTCPModule`, `createUDPModule`, `createGRPCModule`) were using `config.description` as the module `name` when provided. Now `name` is always the generated identifier (e.g. `http:/api`, `ws:/chat`, `tcp:my-tcp`) and `description` is stored as a separate `description` field on the module.
+
+### Added
+
+- **`SinwanModule.description`** — the `SinwanModule` interface now includes an optional `description?: string` field, allowing modules to carry a human-readable description for debugging/logging without overwriting the module name.
+
 ## [3.0.0] — 2026-08-06 — Cookie Support, HttpRespond Helpers & Flexible Error Formatting
 
 ### Added

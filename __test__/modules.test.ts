@@ -164,7 +164,16 @@ describe("modules", () => {
         description: "API Module",
         routes: () => {},
       });
-      expect(mod.name).toBe("API Module");
+      expect(mod.name).toBe("http:/api");
+      expect(mod.description).toBe("API Module");
+    });
+
+    test("creates module without description has undefined description", () => {
+      const mod = createHttpModule({
+        prefix: "/api",
+        routes: () => {},
+      });
+      expect(mod.description).toBeUndefined();
     });
 
     test("creates module without prefix (root-level)", () => {
@@ -391,7 +400,8 @@ describe("modules", () => {
         config: { open: () => {} },
         description: "Chat Module",
       });
-      expect(mod.name).toBe("Chat Module");
+      expect(mod.name).toBe("ws:/chat");
+      expect(mod.description).toBe("Chat Module");
     });
 
     test("register calls app.ws", () => {
@@ -431,7 +441,8 @@ describe("modules", () => {
         config: { open: () => {} },
         description: "TCP Module",
       });
-      expect(mod.name).toBe("TCP Module");
+      expect(mod.name).toBe("tcp:my-tcp");
+      expect(mod.description).toBe("TCP Module");
     });
 
     test("register calls app.tcp", () => {
@@ -471,7 +482,8 @@ describe("modules", () => {
         config: { open: () => {} },
         description: "UDP Module",
       });
-      expect(mod.name).toBe("UDP Module");
+      expect(mod.name).toBe("udp:my-udp");
+      expect(mod.description).toBe("UDP Module");
     });
 
     test("register calls app.udp", () => {
@@ -510,7 +522,8 @@ describe("modules", () => {
         config: {},
         description: "gRPC Module",
       });
-      expect(mod.name).toBe("gRPC Module");
+      expect(mod.name).toBe("grpc:MyService");
+      expect(mod.description).toBe("gRPC Module");
     });
 
     test("register calls provider.registerService", () => {
