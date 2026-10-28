@@ -243,7 +243,7 @@ describe("WSRouter", () => {
       const runtime = createRuntime();
       const handlers = router.buildWebSocketHandlers(runtime)!;
       const testError = new Error("ws error");
-      handlers.error!(createMockWS(), testError);
+      handlers.error!(testError, createMockWS());
       await flushPromises();
       expect(receivedError).toBe(testError);
     });
@@ -413,7 +413,7 @@ describe("WSRouter", () => {
       const runtime = createRuntime({ bus });
       const handlers = router.buildWebSocketHandlers(runtime)!;
       const testError = new Error("boom");
-      handlers.error!(createMockWS(), testError);
+      handlers.error!(testError, createMockWS());
       await flushPromises();
       expect(receivedPayload).toEqual({ path: "/ws", error: testError });
     });

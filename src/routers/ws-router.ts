@@ -119,10 +119,6 @@ interface WSRouteEntry {
 
 type BunWSMessage = string | ArrayBuffer | Uint8Array;
 
-type SinwanWebSocketHandler = WebSocketHandler<WSSData> & {
-  error?: (ws: ServerWebSocket<WSSData>, error: Error) => void;
-};
-
 // ─── WSRouter ─────────────────────────────────────────────
 
 export class WSRouter {
@@ -163,7 +159,9 @@ export class WSRouter {
    * Build the websocket handler block for Bun.serve.
    * Returns undefined if no routes are registered.
    */
-  buildWebSocketHandlers(runtime: Runtime): SinwanWebSocketHandler | undefined {
+  buildWebSocketHandlers(
+    runtime: Runtime,
+  ): WebSocketHandler<WSSData> | undefined {
     if (this.routes.size === 0) return undefined;
 
     const routes = this.routes;
@@ -210,7 +208,7 @@ export class WSRouter {
         );
       },
 
-      error: (ws: ServerWebSocket<WSSData>, error: Error) => {
+      error: (error: Error, ws: ServerWebSocket<WSSData>) => {
         const entry = routes.get(ws.data.path);
         this.runWSHook(
           runtime,

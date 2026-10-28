@@ -2,6 +2,12 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.2] — 2026-10-28 — WebSocket error handler argument order
+
+### Fixed
+
+- **WebSocket `error` handler argument order** — the Bun `websocket.error` handler built by `WSRouter` declared `(ws, error)`, but Bun calls it as `(error, ws)`. On Bun 1.4.x a throwing WS hook would make the handler read `ws.data.path` off the `Error` instead of dispatching `ws:error`. It now follows Bun's `(error, ws)` contract, which also fixes the `tsc` build against `@types/bun` 1.4.4. The public `WSErrorHook` signature `(ws, error)` is unchanged.
+
 ## [3.0.1] — 2026-09-06 — Module description field fix
 
 ### Fixed
