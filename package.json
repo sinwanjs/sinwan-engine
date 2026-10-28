@@ -1,6 +1,6 @@
 {
   "name": "sinwan-engine",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Server framework for building modern distributed applications. Unified runtime for HTTP, WebSocket, TCP, UDP, and gRPC — APIs, real-time systems, microservices, and event-driven apps from a single engine.",
   "author": "Mohammed Ben Cheikh",
   "licenseFilename": "LICENSE",
@@ -29,11 +29,14 @@
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "typescript": "^6.0.3",
+    "typescript": ">=5.0.0 <8.0.0",
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1"
   },
   "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    },
     "@grpc/grpc-js": {
       "optional": true
     },

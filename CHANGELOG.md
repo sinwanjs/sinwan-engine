@@ -2,6 +2,12 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.3] — 2026-10-28 — Optional TypeScript peer
+
+### Fixed
+
+- **`typescript` peer dependency** — it was a required `^6.0.3`, so apps on TypeScript 7 (such as the `create-sinwan` `bun-sinwan-engine` template) failed `npm install` with `ERESOLVE`, and JavaScript apps installed TypeScript for nothing. sinwan-engine never loads TypeScript at runtime; the peer is now optional and accepts `>=5.0.0 <8.0.0`.
+
 ## [3.0.2] — 2026-10-28 — WebSocket error handler argument order
 
 ### Fixed
