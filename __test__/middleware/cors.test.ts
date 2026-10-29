@@ -4,6 +4,8 @@ import { Runtime, type RuntimeConfig } from "../../src/runtime";
 import { EventBus } from "../../src/event-bus";
 import { ErrorHandler } from "../../src/error-handler";
 import { cors, type CorsOptions } from "../../src/middleware/cors";
+import { Sinwan } from "../../src/sinwan";
+import { createHttpModule } from "../../src/modules";
 import type { Request } from "../../src/types";
 
 function createMockReq(
@@ -36,10 +38,9 @@ function corsApp(
 ): HTTPRouter {
   const router = new HTTPRouter();
   router.use(cors(options as never));
-  // Register both GET and OPTIONS so the cors middleware (baked into routes
-  // at registration time) runs for actual responses AND preflight requests.
-  // In Sinwan, middleware is baked into specific routes — an OPTIONS request
-  // with no OPTIONS route returns 405 without touching the middleware.
+  // Register both GET and OPTIONS so preflight requests run through a matched
+  // OPTIONS route chain. Preflights with no OPTIONS route are covered by the
+  // "unmatched requests" suite below.
   router.options(routePath, (ctx) => ctx.json({ preflight: true }));
   router.get(routePath, (ctx) => ctx.json({ ok: true }));
   return router;
@@ -519,6 +520,189 @@ describe("cors middleware", () => {
         "https://app.example.com",
       );
       expect(await actual.json()).toEqual({ ok: true });
+    });
+  });
+
+  // ─── app.use(cors()) on unmatched requests ─────────────────
+  // No OPTIONS routes: preflights resolve to 404/405, and the router must
+  // still run app-level middleware before its fallback response.
+  describe("unmatched requests (no OPTIONS route)", () => {
+    function appWithRoutes(options?: CorsOptions): Sinwan {
+      const app = new Sinwan();
+      app.use(cors(options));
+      app.get("/", (ctx) => ctx.json({ ok: true }));
+      app.post("/api/hello", (ctx) => ctx.json({ hello: true }));
+      return app;
+    }
+
+    const preflightHeaders = {
+      Origin: "http://localhost:3000",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "Content-Type",
+    };
+
+    test("preflight on a POST-only route returns 204 with CORS headers", async () => {
+      const app = appWithRoutes({
+        origin: "http://localhost:3000",
+        methods: ["GET", "POST"],
+      });
+      const res = await app.request("/api/hello", {
+        method: "OPTIONS",
+        headers: preflightHeaders,
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Allow")).toBe(null);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(
+        "http://localhost:3000",
+      );
+      expect(res.headers.get("Access-Control-Allow-Methods")).toBe("GET,POST");
+      expect(res.headers.get("Access-Control-Allow-Headers")).toBe(
+        "Content-Type",
+      );
+      expect(res.headers.get("Vary")).toBe(
+        "Origin, Access-Control-Request-Headers",
+      );
+      expect(await res.text()).toBe("");
+    });
+
+    test("preflight on a GET-only route returns 204 with CORS headers", async () => {
+      const app = appWithRoutes();
+      const res = await app.request("/", {
+        method: "OPTIONS",
+        headers: preflightHeaders,
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(res.headers.get("Access-Control-Allow-Methods")).toBe(
+        "GET,HEAD,PUT,PATCH,POST,DELETE,QUERY",
+      );
+      expect(res.headers.get("Access-Control-Allow-Headers")).toBe(
+        "Content-Type",
+      );
+    });
+
+    test("preflight on an unknown path returns 204", async () => {
+      const app = appWithRoutes();
+      const res = await app.request("/nope", {
+        method: "OPTIONS",
+        headers: preflightHeaders,
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    });
+
+    test("GET on an unknown path keeps the 404 body and adds CORS headers", async () => {
+      const app = appWithRoutes({ origin: "http://localhost:3000" });
+      const res = await app.request("/nope", {
+        headers: { Origin: "http://localhost:3000" },
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Not Found", path: "/nope" });
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(
+        "http://localhost:3000",
+      );
+      expect(res.headers.get("Vary")).toBe("Origin");
+    });
+
+    test("wrong method keeps the 405 + Allow and adds CORS headers", async () => {
+      const app = appWithRoutes();
+      const res = await app.request("/api/hello", {
+        method: "DELETE",
+        headers: { Origin: "https://x.com" },
+      });
+      expect(res.status).toBe(405);
+      expect(res.headers.get("Allow")).toBe("POST");
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(await res.json()).toEqual({ error: "Method Not Allowed" });
+    });
+
+    test("disallowed origin (array) gets no Access-Control-Allow-Origin", async () => {
+      const app = appWithRoutes({ origin: ["https://a.com", "https://b.com"] });
+      const res = await app.request("/api/hello", {
+        method: "OPTIONS",
+        headers: { ...preflightHeaders, Origin: "https://evil.com" },
+      });
+      // cors still short-circuits, but without granting the origin.
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(null);
+      expect(res.headers.get("Vary")).toContain("Origin");
+    });
+
+    test("preflightContinue: true falls through to the 405 with CORS headers", async () => {
+      const app = appWithRoutes({ preflightContinue: true });
+      const res = await app.request("/api/hello", {
+        method: "OPTIONS",
+        headers: preflightHeaders,
+      });
+      expect(res.status).toBe(405);
+      expect(res.headers.get("Allow")).toBe("POST");
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(res.headers.get("Access-Control-Allow-Methods")).toBe(
+        "GET,HEAD,PUT,PATCH,POST,DELETE,QUERY",
+      );
+    });
+
+    test("dynamic options delegate (async) still short-circuits", async () => {
+      const app = new Sinwan();
+      app.use(
+        cors((_ctx, cb) => {
+          setTimeout(() => cb(null, { origin: "https://dyn.com" }), 1);
+        }),
+      );
+      app.get("/", (ctx) => ctx.json({ ok: true }));
+      const res = await app.request("/", {
+        method: "OPTIONS",
+        headers: preflightHeaders,
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(
+        "https://dyn.com",
+      );
+    });
+
+    test("explicit cors.preflight route still handles preflights", async () => {
+      const app = new Sinwan();
+      app.options(
+        "*",
+        cors.preflight({ origin: "https://app.example.com", maxAge: 600 }),
+      );
+      app.post("/api/hello", (ctx) => ctx.json({ hello: true }));
+      const res = await app.request("/api/hello", {
+        method: "OPTIONS",
+        headers: { ...preflightHeaders, Origin: "https://app.example.com" },
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(
+        "https://app.example.com",
+      );
+      expect(res.headers.get("Access-Control-Max-Age")).toBe("600");
+      expect(res.headers.get("Vary")).toBe(
+        "Origin, Access-Control-Request-Headers",
+      );
+    });
+
+    test("cors inside an HTTP module does not apply to unmatched paths", async () => {
+      const app = new Sinwan();
+      app.register(
+        createHttpModule({
+          prefix: "/api",
+          routes: (router) => {
+            router.use(cors());
+            router.get("/users", (ctx) => ctx.json([]));
+          },
+        }),
+      );
+      const pre = await app.request("/api/users", {
+        method: "OPTIONS",
+        headers: preflightHeaders,
+      });
+      expect(pre.status).toBe(405);
+      expect(pre.headers.get("Allow")).toBe("GET");
+      expect(pre.headers.get("Access-Control-Allow-Origin")).toBe(null);
+
+      const missing = await app.request("/api/nope");
+      expect(missing.status).toBe(404);
+      expect(missing.headers.get("Access-Control-Allow-Origin")).toBe(null);
     });
   });
 

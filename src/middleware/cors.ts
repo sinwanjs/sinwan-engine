@@ -41,7 +41,7 @@
  *   },
  * }));
  *
- * // 5. Explicit preflight handler (when you don't want app.use to cover OPTIONS)
+ * // 5. Explicit preflight handler (e.g. with a different policy than app.use)
  * app.options("*", cors.preflight({ origin: "*", maxAge: 3600 }));
  * ```
  *

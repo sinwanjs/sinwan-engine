@@ -458,6 +458,139 @@ describe("HTTPRouter", () => {
     });
   });
 
+  describe("middleware on unmatched requests (404/405)", () => {
+    test("no middleware: 404 and 405 + Allow are unchanged", async () => {
+      const router = new HTTPRouter();
+      router.post("/api", (ctx) => ctx.json({ ok: true }));
+      const notFound = await runFetch(
+        router,
+        createMockReq("http://localhost/nope"),
+      );
+      expect(notFound.status).toBe(404);
+      expect(await notFound.json()).toEqual({
+        error: "Not Found",
+        path: "/nope",
+      });
+      const notAllowed = await runFetch(
+        router,
+        createMockReq("http://localhost/api", "OPTIONS"),
+      );
+      expect(notAllowed.status).toBe(405);
+      expect(notAllowed.headers.get("Allow")).toBe("POST");
+      expect(await notAllowed.json()).toEqual({ error: "Method Not Allowed" });
+    });
+
+    test("sync middleware headers are kept on 404 and 405", async () => {
+      const router = new HTTPRouter();
+      router.use((ctx) => {
+        ctx.setHeader("X-Mw", "1");
+      });
+      router.get("/x", (ctx) => ctx.json({ ok: true }));
+      const notFound = await runFetch(
+        router,
+        createMockReq("http://localhost/nope"),
+      );
+      expect(notFound.status).toBe(404);
+      expect(notFound.headers.get("X-Mw")).toBe("1");
+      const notAllowed = await runFetch(
+        router,
+        createMockReq("http://localhost/x", "POST"),
+      );
+      expect(notAllowed.status).toBe(405);
+      expect(notAllowed.headers.get("Allow")).toBe("GET");
+      expect(notAllowed.headers.get("X-Mw")).toBe("1");
+    });
+
+    test("all middleware runs, including middleware registered after routes", async () => {
+      const router = new HTTPRouter();
+      const calls: string[] = [];
+      router.use(() => {
+        calls.push("before");
+      });
+      router.get("/x", (ctx) => ctx.json({ ok: true }));
+      router.use(() => {
+        calls.push("after");
+      });
+      const res = await runFetch(router, createMockReq("http://localhost/y"));
+      expect(res.status).toBe(404);
+      expect(calls).toEqual(["before", "after"]);
+    });
+
+    test("async middleware that responds replaces the 404", async () => {
+      const router = new HTTPRouter();
+      router.use(async (ctx) => {
+        await new Promise((r) => setTimeout(r, 1));
+        ctx.json({ fallback: true }, 418);
+      });
+      const res = await runFetch(router, createMockReq("http://localhost/y"));
+      expect(res.status).toBe(418);
+      expect(await res.json()).toEqual({ fallback: true });
+    });
+
+    test("async middleware that does not respond still gets the 405", async () => {
+      const router = new HTTPRouter();
+      router.use(async (ctx) => {
+        await new Promise((r) => setTimeout(r, 1));
+        ctx.setHeader("X-Async", "1");
+      });
+      router.get("/x", (ctx) => ctx.json({ ok: true }));
+      const res = await runFetch(
+        router,
+        createMockReq("http://localhost/x", "DELETE"),
+      );
+      expect(res.status).toBe(405);
+      expect(res.headers.get("Allow")).toBe("GET");
+      expect(res.headers.get("X-Async")).toBe("1");
+    });
+
+    test("middleware that responds halts the rest of the chain", async () => {
+      const router = new HTTPRouter();
+      const calls: string[] = [];
+      router.use((ctx) => {
+        calls.push("first");
+        ctx.text("blocked", 401);
+      });
+      router.use(() => {
+        calls.push("second");
+      });
+      const res = await runFetch(router, createMockReq("http://localhost/y"));
+      expect(res.status).toBe(401);
+      expect(await res.text()).toBe("blocked");
+      expect(calls).toEqual(["first"]);
+    });
+
+    test("throwing middleware goes through the error handler", async () => {
+      const router = new HTTPRouter();
+      router.use(async () => {
+        throw new Error("boom");
+      });
+      const res = await runFetch(router, createMockReq("http://localhost/y"));
+      expect(res.status).toBe(500);
+    });
+
+    test("group/mounted router middleware does not run for unmatched paths", async () => {
+      const router = new HTTPRouter();
+      const calls: string[] = [];
+      router.group("/api", (child) => {
+        child.use(() => {
+          calls.push("group");
+        });
+        child.get("/users", (ctx) => ctx.json([]));
+      });
+      const notFound = await runFetch(
+        router,
+        createMockReq("http://localhost/api/nope"),
+      );
+      expect(notFound.status).toBe(404);
+      const notAllowed = await runFetch(
+        router,
+        createMockReq("http://localhost/api/users", "POST"),
+      );
+      expect(notAllowed.status).toBe(405);
+      expect(calls).toEqual([]);
+    });
+  });
+
   // ─── Group & Mount ───────────────────────────────────────
 
   describe("group()", () => {

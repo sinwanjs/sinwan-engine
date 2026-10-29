@@ -2,6 +2,16 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] — 2026-10-29 — App-level middleware on unmatched requests
+
+### Fixed
+
+- **`app.use(cors())` never handled preflight requests** — app-level middleware was only run as part of a matched route's chain, so an `OPTIONS` preflight to a route without an `OPTIONS` handler got `405` (and an unknown path `404`) before `cors()` ever ran, with no CORS headers. Browsers then reported a CORS error instead of the real status. `HTTPRouter.handle()` now runs the router's app-level middleware before its 404/405 fallback: if middleware responds (e.g. `cors()` short-circuiting a preflight with `204`) that response is sent, otherwise the 404/405 (including the `Allow` header) is sent as before, carrying any headers the middleware set. The `app.options("*", cors.preflight(...))` workaround is no longer needed but still works.
+
+### Changed
+
+- **Unmatched requests now run app-level middleware** — every `app.use()` / root `router.use()` handler runs for 404/405 requests, including middleware registered after the last route. Middleware that responds to every request (auth guards, rate limiters) now answers unknown paths too, for example a `401` instead of a `404`. Middleware registered inside HTTP modules, `group()` or mounted routers still runs only for its own matched routes. Apps with no app-level middleware are unaffected.
+
 ## [3.0.3] — 2026-10-28 — Optional TypeScript peer
 
 ### Fixed

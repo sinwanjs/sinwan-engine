@@ -299,6 +299,7 @@ export class HTTPRouter {
 
   // HTTPRouter-level middleware; baked into each route's chain at registration
   // time (registration-order semantics) rather than applied at resolve time.
+  // The only exception is handle()'s 404/405 path, which has no route chain.
   private readonly middlewares: RouteHandler[] = [];
 
   /** Returns a copy of this router's middleware list. */
@@ -337,7 +338,10 @@ export class HTTPRouter {
 
   // ─── Middleware & Grouping ────────────────────────────────
 
-  /** Add HTTPRouter-level middleware. Baked into routes registered after this call. */
+  /**
+   * Add HTTPRouter-level middleware. Baked into routes registered after this
+   * call; unmatched (404/405) requests run all of it before the fallback.
+   */
   use(...handlers: RouteHandler[]) {
     this.middlewares.push(...handlers);
   }
@@ -781,19 +785,20 @@ export class HTTPRouter {
     const pathname = ctx.pathname || "/";
     const match = this.resolve(ctx.req.method, pathname);
 
-    // No route matched → auto 404
-    if (!match) {
-      ctx.json({ error: "Not Found", path: pathname }, 404);
-      return;
-    }
-
-    if (match.type === "method-not-allowed") {
-      // RFC 9110 §15.5.5: a 405 response MUST include an Allow header listing
-      // the methods that have a handler for the matched path.
-      if (match.allowed.length > 0) {
-        ctx.setHeader("Allow", match.allowed.join(", "));
+    if (!match || match.type === "method-not-allowed") {
+      // No route chain to bake middleware into, so run this router's
+      // middleware directly before the 404/405 fallback. This lets `cors()`
+      // answer preflights and decorate the fallback response.
+      const mw = this.middlewares;
+      if (mw.length > 0) {
+        const result = HTTPRouter.runChain(ctx, mw, onError);
+        if (result instanceof Promise) {
+          return result.then(() =>
+            HTTPRouter.respondUnmatched(ctx, match, pathname),
+          );
+        }
       }
-      ctx.json({ error: "Method Not Allowed" }, 405);
+      HTTPRouter.respondUnmatched(ctx, match, pathname);
       return;
     }
 
@@ -815,6 +820,28 @@ export class HTTPRouter {
       ctx.params = allMatch.params;
       return HTTPRouter.runChain(ctx, allMatch.handlers, onError);
     }
+  }
+
+  /** Send the auto 404/405 response unless middleware already responded. */
+  private static respondUnmatched(
+    ctx: HttpContext,
+    match: { type: "method-not-allowed"; allowed: SpecificMethod[] } | null,
+    pathname: string,
+  ): void {
+    if (ctx.hasResponded()) return;
+
+    // No route matched → auto 404
+    if (!match) {
+      ctx.json({ error: "Not Found", path: pathname }, 404);
+      return;
+    }
+
+    // RFC 9110 §15.5.5: a 405 response MUST include an Allow header listing
+    // the methods that have a handler for the matched path.
+    if (match.allowed.length > 0) {
+      ctx.setHeader("Allow", match.allowed.join(", "));
+    }
+    ctx.json({ error: "Method Not Allowed" }, 405);
   }
 
   private async handleAsyncFallback(

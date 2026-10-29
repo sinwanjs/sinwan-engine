@@ -245,7 +245,10 @@ export class Sinwan {
    *
    * Middleware handlers run before the route handlers of every route
    * registered after this call, in registration order. Middleware registered
-   * after a route does not apply to that route. This is the app-level
+   * after a route does not apply to that route. Requests that match no route
+   * (404) or no method (405) run all app-level middleware before the
+   * fallback response, so middleware can answer them (e.g. `cors()`
+   * preflights) or add headers to the 404/405. This is the app-level
    * equivalent of {@link HTTPRouter.use}.
    *
    * ```ts

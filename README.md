@@ -142,13 +142,14 @@ app.use(
 
 ### Preflight (OPTIONS)
 
-In Sinwan, middleware is baked into specific routes at registration time. For preflight (OPTIONS) requests to be handled by the `cors` middleware, register an OPTIONS route — the middleware short-circuits it automatically with a `204` (configurable via `optionsSuccessStatus`):
+`app.use(cors())` short-circuits preflight (OPTIONS) requests with a `204` (configurable via `optionsSuccessStatus`), no OPTIONS route needed. App-level middleware also runs for requests that match no route or method, so the router's 404/405 responses carry CORS headers too:
 
 ```ts
-// cors() handles OPTIONS automatically when an OPTIONS route exists
-app.options("/api/*", (ctx) => {}); // cors() short-circuits before this runs
+app.use(cors());
+app.post("/api/users", createUser); // OPTIONS /api/users → 204 from cors()
 
 // Or use cors.preflight() for an explicit, always-terminating handler
+// (register it before any app.use(cors()), which would short-circuit first)
 app.options("/api/*", cors.preflight({ origin: "*", maxAge: 3600 }));
 ```
 
