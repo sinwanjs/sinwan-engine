@@ -181,9 +181,9 @@ export class Runtime {
    * Stage 3: run the HTTP router against the context.
    */
   private runHttp(ctx: HttpContext): void | Promise<void> {
-    return this.httpRouter.handle(ctx, (error) =>
-      this.errorHandler.handle(error, ctx),
-    );
+    // Errors the router catches (async chains, ctx.fail()) go through the same
+    // path as errors that escape it, so `request:error` / `error` always fire.
+    return this.httpRouter.handle(ctx, (error) => this.handleError(ctx, error));
   }
 
   private finalizeResponse(ctx: HttpContext, startTime: number): Response {

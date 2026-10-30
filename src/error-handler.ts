@@ -21,11 +21,19 @@ export type { ErrorHook } from "./error-normalizer";
 /** Response format type for error responses. */
 export type ErrorResponseType = "json" | "html";
 
-/** Callback to customize error response format. */
+/**
+ * Callback to customize the error response.
+ *
+ * Receives the normalized `payload` (message masked in production), the
+ * context, and the raw thrown `error`, so apps can map their own error types
+ * (validation errors, domain errors) to a body and status. `status` overrides
+ * `payload.statusCode` (default 500).
+ */
 export type ErrorResponseFormatter = (
   payload: ErrorPayload,
   ctx: HttpContext,
-) => { body: unknown; type?: ErrorResponseType };
+  error: unknown,
+) => { body: unknown; type?: ErrorResponseType; status?: number };
 
 /** Options for configuring the ErrorHandler */
 export interface ErrorHandlerOptions extends ErrorNormalizerOptions {
@@ -133,14 +141,13 @@ export class ErrorHandler {
 
     // Only set a response if one hasn't been sent already
     if (!ctx.hasResponded()) {
-      const status = payload.statusCode ?? 500;
-
       // Use custom formatter if provided
       if (this.formatResponse) {
-        const { body, type = this.responseType } = this.formatResponse(
-          payload,
-          ctx,
-        );
+        const {
+          body,
+          type = this.responseType,
+          status = payload.statusCode ?? 500,
+        } = this.formatResponse(payload, ctx, error);
         if (type === "html") {
           ctx.html(typeof body === "string" ? body : String(body), status);
         } else {
@@ -159,6 +166,7 @@ export class ErrorHandler {
       }
 
       // Default response based on responseType
+      const status = payload.statusCode ?? 500;
       if (this.responseType === "html") {
         const htmlBody = this.formatHtmlError(payload);
         ctx.html(htmlBody, status);

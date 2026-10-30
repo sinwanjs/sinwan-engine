@@ -2,6 +2,20 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.2.0] — 2026-10-30 — Raw errors in `formatResponse`, consistent error events, production error masking
+
+### Added
+
+- **`formatResponse` receives the raw error and can set the status** — `ErrorResponseFormatter` is now `(payload, ctx, error) => { body, type?, status? }`. Apps can map their own error types (validation errors, domain errors) to a status and body in one place, even in production where `payload.message` is masked. `status` overrides `payload.statusCode` (default `500`) for JSON and HTML responses. Existing two-argument formatters keep working unchanged.
+
+### Fixed
+
+- **`request:error` and `error` events were skipped for errors caught inside the router** — once a route's handler chain went async (an `async` handler, or async middleware such as `cors()`), or a handler called `ctx.fail()`, the router passed the error straight to the `ErrorHandler` without emitting the events. Whether a listener ran therefore depended on whether an earlier middleware happened to be async. `Runtime` now routes those errors through the same path as errors that escape the router, so both events fire exactly once per error, before the `ErrorHandler` responds.
+
+### Security
+
+- **Production error masking was compiled out of `dist/`** — `Bun.build` inlines `process.env.NODE_ENV` (as `"development"`) by default, so the published bundle (3.1.0 and earlier) never treated a process as production: error responses carried the raw `error.message` and the stack trace even with `NODE_ENV=production`. The build now keeps `process.env.NODE_ENV` a runtime read (`define` in `build.ts`) and fails if the bundle stops reading it. With `NODE_ENV=production`, unexpected errors respond `{ "error": "Internal Server Error" }` again, without a stack. Upgrade if you run sinwan-engine in production.
+
 ## [3.1.0] — 2026-10-29 — App-level middleware on unmatched requests
 
 ### Fixed

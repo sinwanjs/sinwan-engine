@@ -108,6 +108,37 @@ app.get("/risky", async (ctx) => {
 });
 ```
 
+## Error Responses
+
+Errors thrown (or rejected) by any handler or middleware go to the `ErrorHandler`. To map your own error types to a status and body in one place, pass `formatResponse`. It receives the normalized payload (message masked in production), the context, and the raw thrown error:
+
+```ts
+import { z } from "zod";
+
+class AppError extends Error {
+  constructor(message: string, readonly statusCode: number) {
+    super(message);
+  }
+}
+
+const app = await Sinwan.create({
+  error: {
+    formatResponse: (payload, _ctx, error) => {
+      if (error instanceof z.ZodError) {
+        return { status: 422, body: { error: "Validation failed", issues: error.issues } };
+      }
+      if (error instanceof AppError) {
+        return { status: error.statusCode, body: { error: error.message } };
+      }
+      return { body: { error: payload.message } }; // status: payload.statusCode ?? 500
+    },
+    onError: (error) => console.error(error), // logging / telemetry
+  },
+});
+```
+
+The `request:error` and `error` bus events fire once for every error a request raises, before the `ErrorHandler` responds.
+
 ## CORS
 
 Sinwan ships with a built-in `cors` middleware — a faithful port of the popular express `cors` package, adapted to Sinwan's `ctx`-only handler model. No external dependencies required.

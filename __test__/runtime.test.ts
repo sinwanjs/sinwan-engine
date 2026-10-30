@@ -503,6 +503,73 @@ describe("Runtime", () => {
     });
   });
 
+  // ─── fetch() — request:error for errors caught inside the router ──
+
+  describe("fetch() — request:error for errors caught inside the router", () => {
+    function collect(rt: Runtime): { events: string[]; errors: unknown[] } {
+      const events: string[] = [];
+      const errors: unknown[] = [];
+      rt.bus.on("request:error", (_ctx, payload) => {
+        events.push("request:error");
+        errors.push((payload as { error: unknown }).error);
+      });
+      rt.bus.on("error", () => {
+        events.push("error");
+      });
+      return { events, errors };
+    }
+
+    test("sync handler throwing after async middleware emits both events once", async () => {
+      const rt = createRuntime();
+      rt.httpRouter.use(async () => {});
+      rt.httpRouter.get("/", () => {
+        throw new Error("after async mw");
+      });
+      const { events, errors } = collect(rt);
+      const res = await rt.fetch(createMockReq());
+      expect(res.status).toBe(500);
+      expect(events).toEqual(["request:error", "error"]);
+      expect((errors[0] as Error).message).toBe("after async mw");
+    });
+
+    test("async handler rejection emits both events once", async () => {
+      const rt = createRuntime();
+      rt.httpRouter.get("/", async () => {
+        throw new Error("async fail");
+      });
+      const { events } = collect(rt);
+      const res = await rt.fetch(createMockReq());
+      expect(res.status).toBe(500);
+      expect(events).toEqual(["request:error", "error"]);
+    });
+
+    test("ctx.fail() emits both events once", async () => {
+      const rt = createRuntime();
+      rt.httpRouter.get("/", (ctx) => {
+        ctx.fail(new Error("failed"));
+      });
+      const { events, errors } = collect(rt);
+      const res = await rt.fetch(createMockReq());
+      expect(res.status).toBe(500);
+      expect(events).toEqual(["request:error", "error"]);
+      expect((errors[0] as Error).message).toBe("failed");
+    });
+
+    test("a request:error listener can answer before the ErrorHandler", async () => {
+      const rt = createRuntime();
+      rt.httpRouter.use(async () => {});
+      rt.httpRouter.get("/", () => {
+        throw new Error("mapped");
+      });
+      rt.bus.on("request:error", (ctx) => {
+        (ctx as HttpContext).json({ mapped: true }, 409);
+      });
+      const res = await rt.fetch(createMockReq());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ mapped: true });
+    });
+  });
+
   // ─── fetch() — persistent body (stream/iterator) ─────────
 
   describe("fetch() — persistent body", () => {

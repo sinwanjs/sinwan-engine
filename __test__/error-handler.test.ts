@@ -322,6 +322,50 @@ describe("ErrorHandler", () => {
       expect(receivedCtx).toBe(ctx);
     });
 
+    test("formatter receives the raw error", async () => {
+      setEnv("production");
+      const ctx = createCtx();
+      class DomainError extends Error {
+        readonly code = "OUT_OF_STOCK";
+      }
+      const thrown = new DomainError("Out of stock");
+      let received: unknown;
+      const formatter: ErrorResponseFormatter = (payload, _ctx, error) => {
+        received = error;
+        return {
+          body: { error: error instanceof DomainError ? error.message : payload.message },
+        };
+      };
+      const handler = new ErrorHandler({ formatResponse: formatter });
+      await handler.handle(thrown, ctx);
+      expect(received).toBe(thrown);
+      // The payload is masked in production; the raw error is not.
+      expect(ctx.body).toEqual({ error: "Out of stock" });
+    });
+
+    test("formatter status overrides the payload status", async () => {
+      setEnv("development");
+      const ctx = createCtx();
+      const formatter: ErrorResponseFormatter = (payload) => ({
+        body: { error: payload.message },
+        status: 422,
+      });
+      const handler = new ErrorHandler({ formatResponse: formatter });
+      await handler.handle(Object.assign(new Error("invalid"), { statusCode: 400 }), ctx);
+      expect(ctx.statusCode).toBe(422);
+      expect(ctx.body).toEqual({ error: "invalid" });
+    });
+
+    test("formatter status also applies to HTML responses", async () => {
+      setEnv("development");
+      const ctx = createCtx();
+      const formatter: ErrorResponseFormatter = () => ({ body: "<p>teapot</p>", type: "html", status: 418 });
+      const handler = new ErrorHandler({ formatResponse: formatter });
+      await handler.handle(new Error("x"), ctx);
+      expect(ctx.statusCode).toBe(418);
+      expect(ctx.body).toBe("<p>teapot</p>");
+    });
+
     test("formatter uses statusCode from payload", async () => {
       setEnv("development");
       const ctx = createCtx();

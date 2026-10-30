@@ -1,4 +1,5 @@
 import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
+import { cors } from "../../src/middleware/cors";
 import { Sinwan } from "../../src/sinwan";
 import type { ErrorPayload } from "../../src/types";
 
@@ -394,6 +395,68 @@ describe("ErrorHandler — Integration Tests", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.custom).toBe("custom format test");
       expect(body.code).toBe(500);
+    });
+  });
+
+  // ─── App-level error mapping with async middleware ───────
+
+  describe("app-level error mapping with async middleware (cors)", () => {
+    class ValidationError extends Error {
+      constructor(readonly issues: string[]) {
+        super("Validation failed");
+      }
+    }
+
+    function createApp(): Sinwan {
+      const app = new Sinwan({
+        error: {
+          formatResponse: (payload, _ctx, error) =>
+            error instanceof ValidationError
+              ? { body: { error: error.message, issues: error.issues }, status: 422 }
+              : { body: { error: payload.message } },
+        },
+      });
+      app.use(cors({ origin: "http://localhost:3000" }));
+      return app;
+    }
+
+    test("formatter maps a raw error thrown after cors() to its own status in production", async () => {
+      setEnv("production");
+      const app = createApp();
+      app.post("/items", () => {
+        throw new ValidationError(["name is required"]);
+      });
+      const res = await app.request("http://localhost/items", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000" },
+      });
+      expect(res.status).toBe(422);
+      expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
+      expect(await res.json()).toEqual({ error: "Validation failed", issues: ["name is required"] });
+    });
+
+    test("unmapped errors keep the masked message in production", async () => {
+      setEnv("production");
+      const app = createApp();
+      app.get("/boom", async () => {
+        throw new Error("db password leaked");
+      });
+      const res = await app.request("http://localhost/boom");
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "Internal Server Error" });
+    });
+
+    test("request:error and error events fire once for errors thrown after cors()", async () => {
+      const app = createApp();
+      app.get("/boom", () => {
+        throw new Error("boom");
+      });
+      const seen: string[] = [];
+      app.bus.on("request:error", () => void seen.push("request:error"));
+      app.bus.on("error", () => void seen.push("error"));
+      const res = await app.request("http://localhost/boom");
+      expect(res.status).toBe(500);
+      expect(seen).toEqual(["request:error", "error"]);
     });
   });
 
