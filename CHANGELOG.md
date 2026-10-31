@@ -2,6 +2,16 @@
 
 All notable changes to **Sinwan Engine** are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/) and Sinwan Engine adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.2.1] — 2026-10-31 — `app.request()` without a server
+
+### Fixed
+
+- **`ctx.clientIP` threw in `app.request()`** — without a `server` argument, `app.request()` handed the pipeline an empty object as the Bun server, so `ctx.clientIP` failed with `this.server?.requestIP is not a function` (a `500`) and `ctx.setTimeout()` likewise, although both are typed and documented to handle a missing server. `app.request()` now passes the server through unchanged: without one, `ctx.server` and `ctx.clientIP` are `undefined` and `ctx.setTimeout()` does nothing, as on any context without a server. Apps no longer need to guard these calls for in-process tests.
+
+### Changed
+
+- **WebSocket routes in `app.request()` without a server** — a request to a `app.ws()` path is no longer offered to the upgrade hook when no server is given (there is nothing to upgrade with; an accepted upgrade used to fail on the empty server object). It goes to HTTP routing instead. To test an upgrade hook in-process, pass a server (or a mock with `upgrade`) as the third argument.
+
 ## [3.2.0] — 2026-10-30 — Raw errors in `formatResponse`, consistent error events, production error masking
 
 ### Added

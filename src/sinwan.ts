@@ -455,7 +455,9 @@ export class Sinwan {
    *
    * @param input A URL string, path, or a full Request object.
    * @param init Optional RequestInit options (method, headers, body, etc.).
-   * @param server Optional mock Server object.
+   * @param server Optional Bun Server (or mock) the handlers see as `ctx.server`.
+   *   Without one, `ctx.server` and `ctx.clientIP` are `undefined`, and
+   *   WebSocket routes are not upgraded (the request goes to HTTP routing).
    * @returns A Promise resolving to a Response object.
    */
   request(
@@ -468,10 +470,7 @@ export class Sinwan {
         input = new globalThis.Request(input, init);
       }
       this.ensureHttpRouterInstalled();
-      return this.runtime.fetch(
-        input as Request,
-        server ?? ({} as Server<unknown>),
-      );
+      return this.runtime.fetch(input as Request, server);
     }
 
     // Support relative paths by providing a base URL
@@ -481,10 +480,7 @@ export class Sinwan {
         : input.toString();
 
     this.ensureHttpRouterInstalled();
-    return this.runtime.fetch(
-      new globalThis.Request(url, init) as Request,
-      server ?? ({} as Server<unknown>),
-    );
+    return this.runtime.fetch(new globalThis.Request(url, init) as Request, server);
   }
 
   /**

@@ -676,6 +676,46 @@ describe("Sinwan", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.error).toBe("Not Found");
     });
+
+    test("without a server, handlers see none: clientIP is undefined and setTimeout is a no-op", async () => {
+      const app = new Sinwan();
+      app.get("/ip", (ctx) => {
+        ctx.setTimeout(5);
+        ctx.json({ hasServer: ctx.server !== undefined, ip: ctx.clientIP ?? "none" });
+      });
+      for (const res of [await app.request("/ip"), await app.request(new Request("http://localhost/ip"))]) {
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ hasServer: false, ip: "none" });
+      }
+    });
+
+    test("passes the given server through to handlers", async () => {
+      // The real Bun.serve: this file mocks it in beforeEach.
+      const server = originalServe.call(Bun, { port: 0, fetch: () => new Response("unused") });
+      try {
+        const app = new Sinwan();
+        app.get("/ip", (ctx) => ctx.json({ same: ctx.server === server, ip: ctx.clientIP }));
+        const res = await app.request("/ip", undefined, server);
+        // A Request that did not arrive through this server has no address.
+        expect(await res.json()).toEqual({ same: true, ip: null });
+      } finally {
+        server.stop(true);
+      }
+    });
+
+    test("a WebSocket path without a server is not upgraded: it falls through to HTTP routing", async () => {
+      const app = await Sinwan.create();
+      let upgradeRan = false;
+      app.ws("/sock", {
+        upgrade: () => {
+          upgradeRan = true;
+        },
+      });
+      app.get("/sock", (ctx) => ctx.json({ http: true }));
+      const res = await app.request("/sock");
+      expect(upgradeRan).toBe(false);
+      expect(await res.json()).toEqual({ http: true });
+    });
   });
 
   // ─── listen() ────────────────────────────────────────────
